@@ -1,469 +1,191 @@
 <!DOCTYPE html>
 <html lang="ja">
-
 <head>
-
 <meta charset="UTF-8">
-
-<meta
-  name="viewport"
-  content="width=device-width, initial-scale=1.0"
->
-
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>REIZO</title>
 
-<!-- Supabase -->
-<script
-  src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
-</script>
-
-<!-- JAN / Barcode Scanner -->
-<script
-  src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js">
-</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@7/dist/tesseract.min.js"></script>
 
 <style>
-
-body {
-  font-family: system-ui, sans-serif;
-  margin: 0;
-  background: #f6f6f6;
-  color: #222;
-}
-
-main {
-  max-width: 520px;
-  margin: auto;
-  padding: 20px;
-}
-
-h1 {
-  margin-bottom: 4px;
-}
-
-h2 {
-  margin-top: 8px;
-}
-
-.sub {
-  color: #666;
-  margin-top: 0;
-}
-
-.card {
-  background: white;
-  padding: 16px;
-  border-radius: 14px;
-  margin-bottom: 16px;
-}
-
-input,
-select,
-button {
-  box-sizing: border-box;
-  width: 100%;
-  padding: 12px;
-  margin-top: 8px;
-  font-size: 16px;
-}
-
-button {
-  cursor: pointer;
-}
-
-.primary {
-  font-weight: 700;
-  padding: 14px;
-}
-
-.scan-button {
-  font-size: 18px;
-  font-weight: 700;
-  padding: 15px;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-}
-
-.row > * {
-  flex: 1;
-}
-
-.item {
-  background: white;
-  padding: 14px;
-  border-radius: 12px;
-  margin-bottom: 10px;
-}
-
-.item-name {
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-
-.item-meta {
-  color: #777;
-  font-size: 12px;
-  margin-bottom: 8px;
-}
-
-.status-buttons {
-  display: flex;
-  gap: 6px;
-}
-
-.status-buttons button {
-  padding: 8px;
-  font-size: 14px;
-}
-
-.active {
-  font-weight: bold;
-  outline: 2px solid #222;
-}
-
-.danger {
-  margin-top: 8px;
-  font-size: 13px;
-}
-
-#message {
-  margin: 12px 0;
-  font-weight: 600;
-  min-height: 20px;
-}
-
-.success {
-  padding: 10px;
-  background: #eef8ee;
-  border-radius: 8px;
-}
-
-.error {
-  padding: 10px;
-  background: #fff0f0;
-  border-radius: 8px;
-}
-
-.hidden {
-  display: none !important;
-}
-
-.invite {
-  font-family: monospace;
-  font-size: 18px;
-  word-break: break-all;
-}
-
-#reader {
-  width: 100%;
-  margin-top: 12px;
-  overflow: hidden;
-  border-radius: 12px;
-}
-
-.scan-help {
-  color: #666;
-  font-size: 14px;
-}
-
-.jan-number {
-  font-family: monospace;
-  font-size: 18px;
-  font-weight: 700;
-  word-break: break-all;
-}
-
-.badge {
-  display: inline-block;
-  font-size: 12px;
-  padding: 3px 7px;
-  border-radius: 10px;
-  background: #eee;
-  margin-left: 5px;
-}
-
-hr {
-  margin: 22px 0;
-  border: 0;
-  border-top: 1px solid #ddd;
-}
-
+body{font-family:system-ui,sans-serif;margin:0;background:#f6f6f6;color:#222}
+main{max-width:520px;margin:auto;padding:20px}
+h1{margin-bottom:4px}h2{margin-top:8px}
+.sub{color:#666;margin-top:0}
+.card,.item{background:#fff;padding:16px;border-radius:14px;margin-bottom:16px}
+.item{padding:14px;margin-bottom:10px}
+input,select,button,textarea{box-sizing:border-box;width:100%;padding:12px;margin-top:8px;font-size:16px}
+button{cursor:pointer}
+.primary,.scan-button{font-weight:700;padding:14px}
+.scan-button{font-size:18px;padding:15px}
+.row,.status-buttons{display:flex;gap:8px}
+.row>*{flex:1}
+.status-buttons button{padding:8px;font-size:14px}
+.item-name{font-weight:700;margin-bottom:8px}
+.item-meta,.scan-help,.receipt-help{color:#777;font-size:13px;margin-bottom:8px}
+.active{font-weight:bold;outline:2px solid #222}
+.danger{margin-top:8px;font-size:13px}
+#message{margin:12px 0;font-weight:600;min-height:20px}
+.success{padding:10px;background:#eef8ee;border-radius:8px}
+.error{padding:10px;background:#fff0f0;border-radius:8px}
+.hidden{display:none!important}
+.invite{font-family:monospace;font-size:18px;word-break:break-all}
+.jan-number{font-family:monospace;font-size:18px;font-weight:700;word-break:break-all}
+.badge{display:inline-block;font-size:12px;padding:3px 7px;border-radius:10px;background:#eee;margin-left:5px}
+#reader{width:100%;margin-top:12px;overflow:hidden;border-radius:12px}
+hr{margin:22px 0;border:0;border-top:1px solid #ddd}
+.receipt-preview{display:block;max-width:100%;max-height:420px;margin:12px auto 0;border-radius:10px}
+.ocr-progress-wrap{margin-top:12px}
+.ocr-progress-bar{height:10px;background:#e5e5e5;border-radius:999px;overflow:hidden}
+.ocr-progress-fill{height:100%;width:0%;background:#555;transition:width .15s}
+.ocr-status{font-size:13px;color:#666;margin-top:6px}
+.ocr-result{min-height:220px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;line-height:1.5}
+.section-tag{font-size:12px;color:#666;font-weight:600}
+.warning-note{font-size:13px;background:#fff8e6;padding:10px;border-radius:8px;margin-top:10px}
 </style>
-
 </head>
 
 <body>
-
 <main>
 
 <h1>REIZO</h1>
-
-<p class="sub">
-  わが家の共有冷蔵庫
-</p>
-
+<p class="sub">わが家の共有冷蔵庫</p>
 <div id="message"></div>
 
-<!-- ===================================== -->
-<!-- ログイン -->
-<!-- ===================================== -->
-
-<section
-  id="authView"
-  class="card hidden"
->
-
+<section id="authView" class="card hidden">
 <h2>ログイン</h2>
-
-<input
-  id="email"
-  type="email"
-  placeholder="メールアドレス"
->
-
-<input
-  id="password"
-  type="password"
-  placeholder="パスワード"
->
-
+<input id="email" type="email" placeholder="メールアドレス">
+<input id="password" type="password" placeholder="パスワード">
 <div class="row">
-
-<button onclick="signIn()">
-  ログイン
-</button>
-
-<button onclick="signUp()">
-  新規登録
-</button>
-
+<button onclick="signIn()">ログイン</button>
+<button onclick="signUp()">新規登録</button>
 </div>
-
 </section>
 
-
-<!-- ===================================== -->
-<!-- 家 -->
-<!-- ===================================== -->
-
-<section
-  id="householdView"
-  class="card hidden"
->
-
+<section id="householdView" class="card hidden">
 <h2>家を設定</h2>
-
 <p>新しく家を作る</p>
-
-<input
-  id="houseName"
-  placeholder="例：わが家"
->
-
-<button onclick="createHousehold()">
-  家を作る
-</button>
+<input id="houseName" placeholder="例：わが家">
+<button onclick="createHousehold()">家を作る</button>
 
 <hr>
 
 <p>招待コードで参加</p>
-
-<input
-  id="inviteInput"
-  placeholder="招待コード"
->
-
-<button onclick="joinHousehold()">
-  参加する
-</button>
-
-<button onclick="signOut()">
-  ログアウト
-</button>
-
+<input id="inviteInput" placeholder="招待コード">
+<button onclick="joinHousehold()">参加する</button>
+<button onclick="signOut()">ログアウト</button>
 </section>
 
-
-<!-- ===================================== -->
-<!-- アプリ本体 -->
-<!-- ===================================== -->
-
-<section
-  id="appView"
-  class="hidden"
->
-
-
-<!-- 家情報 -->
+<section id="appView" class="hidden">
 
 <div class="card">
-
-<h2 id="householdName">
-  わが家
-</h2>
-
+<h2 id="householdName">わが家</h2>
 <p>招待コード</p>
-
-<div
-  id="inviteCode"
-  class="invite">
+<div id="inviteCode" class="invite"></div>
+<button onclick="signOut()">ログアウト</button>
 </div>
-
-<button onclick="signOut()">
-  ログアウト
-</button>
-
-</div>
-
-
-<!-- ===================================== -->
-<!-- JANスキャン -->
-<!-- ===================================== -->
 
 <div class="card">
-
+<div class="section-tag">JAN入庫</div>
 <h2>商品を入庫</h2>
-
-<button
-  class="scan-button"
-  onclick="startScanner()">
-  📷 JANをスキャン
-</button>
-
-<p class="scan-help">
-  商品のバーコードをカメラに映してください。
-</p>
-
-<div
-  id="scannerArea"
-  class="hidden">
-
-  <div id="reader"></div>
-
-  <button onclick="stopScanner()">
-    スキャンを閉じる
-  </button>
-
+<button class="scan-button" onclick="startScanner()">📷 JANをスキャン</button>
+<p class="scan-help">商品のバーコードをカメラに映してください。</p>
+<div id="scannerArea" class="hidden">
+<div id="reader"></div>
+<button onclick="stopScanner()">スキャンを閉じる</button>
+</div>
 </div>
 
-</div>
-
-
-<!-- ===================================== -->
-<!-- 未登録JAN -->
-<!-- ===================================== -->
-
-<div
-  id="unknownProductView"
-  class="card hidden">
-
+<div id="unknownProductView" class="card hidden">
 <h2>初めての商品</h2>
-
-<p>
-  このJANはまだ登録されていません。
-</p>
-
+<p>このJANはまだ登録されていません。</p>
 <p>JAN</p>
-
-<div
-  id="scannedJan"
-  class="jan-number">
-</div>
-
-<input
-  id="newProductName"
-  placeholder="商品名 例：明治おいしい牛乳 900ml"
->
+<div id="scannedJan" class="jan-number"></div>
+<input id="newProductName" placeholder="商品名 例：明治おいしい牛乳 900ml">
 
 <select id="newProductStorage">
-
-<option value="fridge">
-  冷蔵
-</option>
-
-<option value="freezer">
-  冷凍
-</option>
-
-<option value="pantry">
-  常温
-</option>
-
+<option value="fridge">冷蔵</option>
+<option value="freezer">冷凍</option>
+<option value="pantry">常温</option>
 </select>
 
-<button
-  class="primary"
-  onclick="saveNewProduct()">
-  記憶して入庫
-</button>
-
-<button onclick="cancelUnknownProduct()">
-  キャンセル
-</button>
-
+<button class="primary" onclick="saveNewProduct()">記憶して入庫</button>
+<button onclick="cancelUnknownProduct()">キャンセル</button>
 </div>
-
-
-<!-- ===================================== -->
-<!-- 手動追加 -->
-<!-- ===================================== -->
 
 <div class="card">
+<div class="section-tag">v0.3 OCRテスト</div>
+<h2>🧾 レシートを読む</h2>
 
-<h2>手動で追加</h2>
+<p class="receipt-help">
+この段階では読み取った文字を表示するだけです。在庫は変更しません。
+</p>
 
 <input
-  id="itemName"
-  placeholder="例：キャベツ"
+  id="receiptFile"
+  type="file"
+  accept="image/*"
+  capture="environment"
+  onchange="receiptFileChanged()"
 >
 
-<select id="storage">
+<img
+  id="receiptPreview"
+  class="receipt-preview hidden"
+  alt="レシート画像プレビュー"
+>
 
-<option value="fridge">
-  冷蔵
-</option>
-
-<option value="freezer">
-  冷凍
-</option>
-
-<option value="pantry">
-  常温
-</option>
-
-</select>
-
-<button onclick="addItem()">
-  追加
+<button id="ocrButton" class="primary" onclick="runReceiptOcr()">
+文字を読み取る
 </button>
 
+<div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
+<div class="ocr-progress-bar">
+<div id="ocrProgressFill" class="ocr-progress-fill"></div>
+</div>
+<div id="ocrStatus" class="ocr-status">準備中…</div>
 </div>
 
+<div id="ocrResultArea" class="hidden">
+<p><strong>OCR認識結果</strong></p>
+<textarea id="ocrResult" class="ocr-result" readonly></textarea>
+<button onclick="clearReceiptOcr()">結果をクリア</button>
+</div>
+
+<div class="warning-note">
+まずは実際のレシートと認識結果を見比べて、商品名・価格・店名がどの程度読めるか確認します。
+</div>
+</div>
+
+<div class="card">
+<h2>手動で追加</h2>
+<input id="itemName" placeholder="例：キャベツ">
+
+<select id="storage">
+<option value="fridge">冷蔵</option>
+<option value="freezer">冷凍</option>
+<option value="pantry">常温</option>
+</select>
+
+<button onclick="addItem()">追加</button>
+</div>
 
 <h2>在庫</h2>
-
 <div id="items"></div>
 
-
 <h2>買い物候補</h2>
-
 <div id="shopping"></div>
 
-
 </section>
-
 </main>
-
 
 <script>
 
-// ==========================================
-// Supabase
-// ★ここだけ自分の情報に変更
-// ==========================================
+/* =========================================
+   ★ここだけ、今使っている自分の値に変更
+   ========================================= */
 
 const SUPABASE_URL =
   "https://faavfjrkdgnufhpqjkks.supabase.co";
@@ -471,7 +193,7 @@ const SUPABASE_URL =
 const SUPABASE_KEY =
   "sb_publishable_YNdPWnNeuENGqHlUO1iwCQ_pdbaqpe9";
 
-// ==========================================
+/* ========================================= */
 
 const db =
   window.supabase.createClient(
@@ -480,82 +202,64 @@ const db =
   );
 
 let currentHousehold = null;
-
 let realtimeChannel = null;
 
 let html5QrCode = null;
-
 let scannerRunning = false;
-
 let scanLock = false;
-
 let pendingJan = null;
 
+let ocrWorker = null;
+let receiptPreviewUrl = null;
 
-// ==========================================
-// 共通
-// ==========================================
+
+/* ===============================
+   共通
+   =============================== */
 
 function show(id) {
-
   [
     "authView",
     "householdView",
     "appView"
-  ].forEach(x => {
-
+  ].forEach(x =>
     document
       .getElementById(x)
       .classList
-      .add("hidden");
-
-  });
+      .add("hidden")
+  );
 
   document
     .getElementById(id)
     .classList
     .remove("hidden");
-
 }
 
-
-function message(
-  text,
-  type = ""
-) {
-
+function message(text, type = "") {
   const el =
-    document.getElementById(
-      "message"
-    );
+    document.getElementById("message");
 
-  el.textContent =
-    text || "";
-
+  el.textContent = text || "";
   el.className = "";
 
   if (type) {
     el.classList.add(type);
   }
-
 }
 
-
 function escapeHtml(text) {
-
   const d =
     document.createElement("div");
 
   d.textContent = text;
 
   return d.innerHTML;
-
 }
 
 
-// ==========================================
-// Authentication
-// ==========================================
+/* ===============================
+   ログイン
+   =============================== */
 
 async function signUp() {
 
@@ -572,35 +276,22 @@ async function signUp() {
       .getElementById("password")
       .value;
 
-  const {
-    data,
-    error
-  } =
+  const { data, error } =
     await db.auth.signUp({
-
       email,
-
       password,
-
       options: {
-
         emailRedirectTo:
           location.origin +
           location.pathname
-
       }
-
     });
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   if (data.session) {
@@ -618,11 +309,8 @@ async function signUp() {
       "確認メールを送信しました。メール内のリンクを開いてください。",
       "success"
     );
-
   }
-
 }
-
 
 async function signIn() {
 
@@ -642,40 +330,30 @@ async function signIn() {
   const { error } =
     await db.auth
       .signInWithPassword({
-
         email,
         password
-
       });
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   await boot();
-
 }
-
 
 async function signOut() {
 
   await stopScanner();
 
   if (realtimeChannel) {
-
     await db.removeChannel(
       realtimeChannel
     );
 
     realtimeChannel = null;
-
   }
 
   currentHousehold = null;
@@ -685,13 +363,12 @@ async function signOut() {
   message("");
 
   show("authView");
-
 }
 
 
-// ==========================================
-// 起動
-// ==========================================
+/* ===============================
+   起動
+   =============================== */
 
 async function boot() {
 
@@ -699,11 +376,7 @@ async function boot() {
     await db.auth.getSession();
 
   if (!data.session) {
-
-    show("authView");
-
-    return;
-
+    return show("authView");
   }
 
   const {
@@ -717,34 +390,27 @@ async function boot() {
       .maybeSingle();
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   if (!membership) {
-
-    show("householdView");
-
-    return;
-
+    return show(
+      "householdView"
+    );
   }
 
   await openHousehold(
     membership.household_id
   );
-
 }
 
 
-// ==========================================
-// 家
-// ==========================================
+/* ===============================
+   家
+   =============================== */
 
 async function createHousehold() {
 
@@ -755,20 +421,13 @@ async function createHousehold() {
       .trim();
 
   if (!name) {
-
-    message(
+    return message(
       "家の名前を入力してください",
       "error"
     );
-
-    return;
-
   }
 
-  const {
-    data,
-    error
-  } =
+  const { data, error } =
     await db.rpc(
       "create_household",
       {
@@ -777,22 +436,16 @@ async function createHousehold() {
     );
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   await openHousehold(
     data[0].household_id
   );
-
 }
-
 
 async function joinHousehold() {
 
@@ -803,20 +456,13 @@ async function joinHousehold() {
       .trim();
 
   if (!code) {
-
-    message(
+    return message(
       "招待コードを入力してください",
       "error"
     );
-
-    return;
-
   }
 
-  const {
-    data,
-    error
-  } =
+  const { data, error } =
     await db.rpc(
       "join_household",
       {
@@ -825,27 +471,18 @@ async function joinHousehold() {
     );
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   await openHousehold(data);
-
 }
-
 
 async function openHousehold(id) {
 
-  const {
-    data,
-    error
-  } =
+  const { data, error } =
     await db
       .from("households")
       .select(
@@ -855,14 +492,10 @@ async function openHousehold(id) {
       .single();
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   currentHousehold = data;
@@ -886,13 +519,12 @@ async function openHousehold(id) {
   await loadItems();
 
   startRealtime();
-
 }
 
 
-// ==========================================
-// JANスキャナー
-// ==========================================
+/* ===============================
+   JANスキャナー
+   =============================== */
 
 async function startScanner() {
 
@@ -923,44 +555,27 @@ async function startScanner() {
           "reader",
           {
             formatsToSupport: [
-
-              Html5QrcodeSupportedFormats
-                .EAN_13,
-
-              Html5QrcodeSupportedFormats
-                .EAN_8,
-
-              Html5QrcodeSupportedFormats
-                .UPC_A
-
+              Html5QrcodeSupportedFormats.EAN_13,
+              Html5QrcodeSupportedFormats.EAN_8,
+              Html5QrcodeSupportedFormats.UPC_A
             ]
           }
         );
-
     }
 
     await html5QrCode.start(
-
       {
         facingMode:
           "environment"
       },
-
       {
-
         fps: 10,
-
         qrbox: {
           width: 250,
           height: 120
         }
-
       },
-
-      async (
-        decodedText,
-        decodedResult
-      ) => {
+      async decodedText => {
 
         if (scanLock) {
           return;
@@ -975,13 +590,8 @@ async function startScanner() {
         await stopScanner();
 
         await handleJan(jan);
-
       },
-
-      () => {
-        // 読み取れていないフレームは無視
-      }
-
+      () => {}
     );
 
     scannerRunning = true;
@@ -1003,11 +613,8 @@ async function startScanner() {
     );
 
     console.error(err);
-
   }
-
 }
-
 
 async function stopScanner() {
 
@@ -1017,15 +624,10 @@ async function stopScanner() {
   ) {
 
     try {
-
       await html5QrCode.stop();
-
     } catch (err) {
-
       console.log(err);
-
     }
-
   }
 
   scannerRunning = false;
@@ -1036,9 +638,7 @@ async function stopScanner() {
     )
     .classList
     .add("hidden");
-
 }
-
 
 async function handleJan(jan) {
 
@@ -1069,18 +669,14 @@ async function handleJan(jan) {
 
   if (error) {
 
-    message(
+    scanLock = false;
+
+    return message(
       error.message,
       "error"
     );
-
-    scanLock = false;
-
-    return;
-
   }
 
-  // 登録済み
   if (product) {
 
     await putProductInStock(
@@ -1090,10 +686,8 @@ async function handleJan(jan) {
     scanLock = false;
 
     return;
-
   }
 
-  // 初めての商品
   pendingJan = jan;
 
   document
@@ -1132,25 +726,15 @@ async function handleJan(jan) {
       "newProductName"
     )
     .focus();
-
 }
-
-
-// ==========================================
-// 初回の商品登録
-// ==========================================
 
 async function saveNewProduct() {
 
   if (!pendingJan) {
-
-    message(
+    return message(
       "JANがありません",
       "error"
     );
-
-    return;
-
   }
 
   const name =
@@ -1169,25 +753,17 @@ async function saveNewProduct() {
       .value;
 
   if (!name) {
-
-    message(
+    return message(
       "商品名を入力してください",
       "error"
     );
-
-    return;
-
   }
 
-  const {
-    data,
-    error
-  } =
+  const { data, error } =
     await db
       .from("products")
       .upsert(
         {
-
           household_id:
             currentHousehold.id,
 
@@ -1198,27 +774,20 @@ async function saveNewProduct() {
 
           default_storage:
             storage
-
         },
         {
-
           onConflict:
             "household_id,jan"
-
         }
       )
       .select()
       .single();
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   pendingJan = null;
@@ -1235,14 +804,11 @@ async function saveNewProduct() {
   );
 
   scanLock = false;
-
 }
-
 
 function cancelUnknownProduct() {
 
   pendingJan = null;
-
   scanLock = false;
 
   document
@@ -1253,13 +819,7 @@ function cancelUnknownProduct() {
     .add("hidden");
 
   message("");
-
 }
-
-
-// ==========================================
-// JAN商品を在庫へ
-// ==========================================
 
 async function putProductInStock(
   product
@@ -1283,24 +843,18 @@ async function putProductInStock(
       .maybeSingle();
 
   if (findError) {
-
-    message(
+    return message(
       findError.message,
       "error"
     );
-
-    return;
-
   }
 
-  // すでに在庫行がある
   if (existing) {
 
     const { error } =
       await db
         .from("items")
         .update({
-
           name:
             product.name,
 
@@ -1309,7 +863,6 @@ async function putProductInStock(
 
           status:
             "in_stock"
-
         })
         .eq(
           "id",
@@ -1317,26 +870,18 @@ async function putProductInStock(
         );
 
     if (error) {
-
-      message(
+      return message(
         error.message,
         "error"
       );
-
-      return;
-
     }
 
-  }
-
-  // 初めて在庫へ入る
-  else {
+  } else {
 
     const { error } =
       await db
         .from("items")
         .insert({
-
           household_id:
             currentHousehold.id,
 
@@ -1351,20 +896,14 @@ async function putProductInStock(
 
           jan:
             product.jan
-
         });
 
     if (error) {
-
-      message(
+      return message(
         error.message,
         "error"
       );
-
-      return;
-
     }
-
   }
 
   message(
@@ -1375,13 +914,323 @@ async function putProductInStock(
   );
 
   await loadItems();
-
 }
 
 
-// ==========================================
-// 手動追加
-// ==========================================
+/* ===============================
+   v0.3 レシートOCR
+   =============================== */
+
+function receiptFileChanged() {
+
+  const input =
+    document.getElementById(
+      "receiptFile"
+    );
+
+  const preview =
+    document.getElementById(
+      "receiptPreview"
+    );
+
+  document
+    .getElementById(
+      "ocrResultArea"
+    )
+    .classList
+    .add("hidden");
+
+  document
+    .getElementById(
+      "ocrResult"
+    )
+    .value = "";
+
+  if (receiptPreviewUrl) {
+
+    URL.revokeObjectURL(
+      receiptPreviewUrl
+    );
+
+    receiptPreviewUrl = null;
+  }
+
+  if (
+    !input.files ||
+    !input.files[0]
+  ) {
+
+    preview.classList.add(
+      "hidden"
+    );
+
+    preview.removeAttribute(
+      "src"
+    );
+
+    return;
+  }
+
+  receiptPreviewUrl =
+    URL.createObjectURL(
+      input.files[0]
+    );
+
+  preview.src =
+    receiptPreviewUrl;
+
+  preview.classList.remove(
+    "hidden"
+  );
+
+  message("");
+}
+
+function updateOcrProgress(m) {
+
+  const wrap =
+    document.getElementById(
+      "ocrProgressWrap"
+    );
+
+  const fill =
+    document.getElementById(
+      "ocrProgressFill"
+    );
+
+  const status =
+    document.getElementById(
+      "ocrStatus"
+    );
+
+  wrap.classList.remove(
+    "hidden"
+  );
+
+  const pct =
+    typeof m.progress ===
+    "number"
+      ? Math.round(
+          m.progress * 100
+        )
+      : 0;
+
+  fill.style.width =
+    pct + "%";
+
+  const labels = {
+
+    "loading tesseract core":
+      "OCRエンジンを読み込み中",
+
+    "initializing tesseract":
+      "OCRエンジンを初期化中",
+
+    "loading language traineddata":
+      "日本語データを読み込み中",
+
+    "initializing api":
+      "認識準備中",
+
+    "recognizing text":
+      "レシートを読み取り中"
+  };
+
+  status.textContent =
+    (
+      labels[m.status] ||
+      m.status ||
+      "処理中"
+    ) +
+    (
+      typeof m.progress ===
+      "number"
+        ? ` ${pct}%`
+        : ""
+    );
+}
+
+async function getOcrWorker() {
+
+  if (ocrWorker) {
+    return ocrWorker;
+  }
+
+  ocrWorker =
+    await Tesseract.createWorker(
+      [
+        "jpn",
+        "eng"
+      ],
+      1,
+      {
+        logger:
+          updateOcrProgress
+      }
+    );
+
+  return ocrWorker;
+}
+
+async function runReceiptOcr() {
+
+  const input =
+    document.getElementById(
+      "receiptFile"
+    );
+
+  const button =
+    document.getElementById(
+      "ocrButton"
+    );
+
+  const resultArea =
+    document.getElementById(
+      "ocrResultArea"
+    );
+
+  const resultBox =
+    document.getElementById(
+      "ocrResult"
+    );
+
+  const fill =
+    document.getElementById(
+      "ocrProgressFill"
+    );
+
+  const status =
+    document.getElementById(
+      "ocrStatus"
+    );
+
+  if (
+    !input.files ||
+    !input.files[0]
+  ) {
+    return message(
+      "先にレシートを撮影するか、写真を選んでください。",
+      "error"
+    );
+  }
+
+  button.disabled = true;
+
+  button.textContent =
+    "読み取り中…";
+
+  resultArea.classList.add(
+    "hidden"
+  );
+
+  fill.style.width =
+    "0%";
+
+  status.textContent =
+    "準備中…";
+
+  document
+    .getElementById(
+      "ocrProgressWrap"
+    )
+    .classList
+    .remove("hidden");
+
+  message(
+    "レシートをOCRしています…"
+  );
+
+  try {
+
+    const worker =
+      await getOcrWorker();
+
+    const {
+      data: {
+        text
+      }
+    } =
+      await worker.recognize(
+        input.files[0]
+      );
+
+    resultBox.value =
+      (text || "")
+        .trim();
+
+    resultArea.classList.remove(
+      "hidden"
+    );
+
+    fill.style.width =
+      "100%";
+
+    status.textContent =
+      "完了 100%";
+
+    message(
+      "✓ OCRが完了しました。在庫データは変更していません。",
+      "success"
+    );
+
+  } catch (err) {
+
+    console.error(err);
+
+    message(
+      "OCRに失敗しました。別の写真で試すか、画像形式を確認してください。",
+      "error"
+    );
+
+    status.textContent =
+      "OCRエラー";
+
+  } finally {
+
+    button.disabled =
+      false;
+
+    button.textContent =
+      "文字を読み取る";
+  }
+}
+
+function clearReceiptOcr() {
+
+  document
+    .getElementById(
+      "ocrResult"
+    )
+    .value = "";
+
+  document
+    .getElementById(
+      "ocrResultArea"
+    )
+    .classList
+    .add("hidden");
+
+  document
+    .getElementById(
+      "ocrProgressWrap"
+    )
+    .classList
+    .add("hidden");
+
+  document
+    .getElementById(
+      "ocrProgressFill"
+    )
+    .style.width =
+      "0%";
+
+  message("");
+}
+
+
+/* ===============================
+   手動追加・在庫
+   =============================== */
 
 async function addItem() {
 
@@ -1401,21 +1250,16 @@ async function addItem() {
       .value;
 
   if (!name) {
-
-    message(
+    return message(
       "商品名を入力してください",
       "error"
     );
-
-    return;
-
   }
 
   const { error } =
     await db
       .from("items")
       .insert({
-
         household_id:
           currentHousehold.id,
 
@@ -1425,18 +1269,13 @@ async function addItem() {
 
         status:
           "in_stock"
-
       });
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   document
@@ -1446,13 +1285,7 @@ async function addItem() {
     .value = "";
 
   await loadItems();
-
 }
-
-
-// ==========================================
-// 在庫読み込み
-// ==========================================
 
 async function loadItems() {
 
@@ -1460,10 +1293,7 @@ async function loadItems() {
     return;
   }
 
-  const {
-    data,
-    error
-  } =
+  const { data, error } =
     await db
       .from("items")
       .select("*")
@@ -1479,58 +1309,37 @@ async function loadItems() {
       );
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   renderItems(
     data || []
   );
-
 }
-
-
-// ==========================================
-// 在庫表示
-// ==========================================
 
 function renderItems(items) {
 
   const stock =
-    document
-      .getElementById(
-        "items"
-      );
+    document.getElementById(
+      "items"
+    );
 
   const shopping =
-    document
-      .getElementById(
-        "shopping"
-      );
+    document.getElementById(
+      "shopping"
+    );
 
   stock.innerHTML = "";
-
   shopping.innerHTML = "";
 
   const storageNames = {
-
-    fridge:
-      "冷蔵",
-
-    freezer:
-      "冷凍",
-
-    pantry:
-      "常温"
-
+    fridge: "冷蔵",
+    freezer: "冷凍",
+    pantry: "常温"
   };
-
 
   items.forEach(item => {
 
@@ -1544,75 +1353,36 @@ function renderItems(items) {
 
     const janBadge =
       item.jan
-        ? `<span class="badge">JAN</span>`
+        ? '<span class="badge">JAN</span>'
         : "";
 
     div.innerHTML = `
-
       <div class="item-name">
-
         ${escapeHtml(item.name)}
-
         ${janBadge}
-
       </div>
 
       <div class="item-meta">
-
         ${storageNames[item.storage]}
-
       </div>
 
       <div class="status-buttons">
 
         <button
-          class="${
-            item.status ===
-            "in_stock"
-              ? "active"
-              : ""
-          }"
-          onclick="
-            setStatus(
-              '${item.id}',
-              'in_stock'
-            )
-          "
-        >
+          class="${item.status === "in_stock" ? "active" : ""}"
+          onclick="setStatus('${item.id}','in_stock')">
           ある
         </button>
 
         <button
-          class="${
-            item.status ===
-            "low"
-              ? "active"
-              : ""
-          }"
-          onclick="
-            setStatus(
-              '${item.id}',
-              'low'
-            )
-          "
-        >
+          class="${item.status === "low" ? "active" : ""}"
+          onclick="setStatus('${item.id}','low')">
           少ない
         </button>
 
         <button
-          class="${
-            item.status ===
-            "out"
-              ? "active"
-              : ""
-          }"
-          onclick="
-            setStatus(
-              '${item.id}',
-              'out'
-            )
-          "
-        >
+          class="${item.status === "out" ? "active" : ""}"
+          onclick="setStatus('${item.id}','out')">
           ない
         </button>
 
@@ -1620,21 +1390,14 @@ function renderItems(items) {
 
       <button
         class="danger"
-        onclick="
-          deleteItem(
-            '${item.id}'
-          )
-        "
-      >
+        onclick="deleteItem('${item.id}')">
         削除
       </button>
-
     `;
 
     stock.appendChild(
       div
     );
-
 
     if (
       item.status === "out" ||
@@ -1659,19 +1422,14 @@ function renderItems(items) {
       shopping.appendChild(
         shop
       );
-
     }
-
   });
-
 
   if (!items.length) {
 
     stock.textContent =
       "まだ食品がありません";
-
   }
-
 
   if (
     !items.some(
@@ -1683,15 +1441,8 @@ function renderItems(items) {
 
     shopping.textContent =
       "買い物候補はありません";
-
   }
-
 }
-
-
-// ==========================================
-// 状態変更
-// ==========================================
 
 async function setStatus(
   id,
@@ -1710,24 +1461,14 @@ async function setStatus(
       );
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   await loadItems();
-
 }
-
-
-// ==========================================
-// 削除
-// ==========================================
 
 async function deleteItem(id) {
 
@@ -1749,24 +1490,19 @@ async function deleteItem(id) {
       );
 
   if (error) {
-
-    message(
+    return message(
       error.message,
       "error"
     );
-
-    return;
-
   }
 
   await loadItems();
-
 }
 
 
-// ==========================================
-// Realtime
-// ==========================================
+/* ===============================
+   リアルタイム同期
+   =============================== */
 
 function startRealtime() {
 
@@ -1775,72 +1511,53 @@ function startRealtime() {
     db.removeChannel(
       realtimeChannel
     );
-
   }
 
   realtimeChannel =
-    db.channel(
-      "items-" +
-      currentHousehold.id
-    )
-
-    .on(
-
-      "postgres_changes",
-
-      {
-
-        event: "*",
-
-        schema: "public",
-
-        table: "items",
-
-        filter:
-          "household_id=eq." +
-          currentHousehold.id
-
-      },
-
-      () => {
-
-        loadItems();
-
-      }
-
-    )
-
-    .subscribe();
-
+    db
+      .channel(
+        "items-" +
+        currentHousehold.id
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "items",
+          filter:
+            "household_id=eq." +
+            currentHousehold.id
+        },
+        () =>
+          loadItems()
+      )
+      .subscribe();
 }
 
 
-// ==========================================
-// Auth監視
-// ==========================================
+/* ===============================
+   認証監視
+   =============================== */
 
 db.auth.onAuthStateChange(
-
   (_event, session) => {
 
-    setTimeout(() => {
+    setTimeout(
+      () => {
 
-      if (session) {
+        if (session) {
+          boot();
+        }
 
-        boot();
-
-      }
-
-    }, 0);
-
+      },
+      0
+    );
   }
-
 );
-
 
 boot();
 
 </script>
-
 </body>
 </html>
