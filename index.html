@@ -56,6 +56,14 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .ai-item-detail{font-size:13px;color:#666;margin-top:4px}
 .raw-toggle{margin-top:12px}
 .raw-wrap{margin-top:10px}
+.receipt-state{margin-top:8px;padding:8px 10px;border-radius:9px;font-size:13px}
+.receipt-state.known{background:#eef8ee}
+.receipt-state.unknown{background:#fff8e6}
+.receipt-state.skip{background:#f1f1f1;color:#666}
+.receipt-actions{display:grid;gap:6px;margin-top:10px}
+.receipt-actions button{margin-top:0}
+.receipt-link-panel{background:#f7f7f7;padding:12px;border-radius:12px;margin-top:12px}
+.receipt-summary{font-size:13px;color:#555;margin:10px 0}
 </style>
 </head>
 
@@ -124,10 +132,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.4.1 Google Vision + LLM</div>
+<div class="section-tag">v0.5 レシート学習 + JAN紐づけ</div>
 <h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
-Google Cloud Visionで文字を読み、LLMが購入商品・数量・価格を整理します。この段階では在庫は変更しません。
+Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。覚えた対応はREIZO側に蓄積します。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
@@ -138,6 +146,26 @@ Google Cloud Visionで文字を読み、LLMが購入商品・数量・価格を�
 </div>
 
 <button id="ocrButton" class="primary" onclick="runReceiptOcr()">Google Vision + AIで解析</button>
+
+<div id="receiptScannerArea" class="receipt-link-panel hidden">
+<div class="process-title">未知商品のJANをスキャン</div>
+<div id="receiptReader"></div>
+<button onclick="stopReceiptScanner()">スキャンを閉じる</button>
+</div>
+
+<div id="receiptLinkForm" class="receipt-link-panel hidden">
+<div class="process-title">商品をREIZOに登録</div>
+<div id="receiptLinkTarget" class="receipt-help"></div>
+<div id="receiptLinkJan" class="jan-number"></div>
+<input id="receiptLinkProductName" placeholder="商品名">
+<select id="receiptLinkStorage">
+<option value="fridge">冷蔵</option>
+<option value="freezer">冷凍</option>
+<option value="pantry">常温</option>
+</select>
+<button class="primary" onclick="saveReceiptLinkedProduct()">登録して紐づける</button>
+<button onclick="cancelReceiptLink()">キャンセル</button>
+</div>
 
 <div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
 <div class="ocr-progress-bar">
@@ -150,6 +178,8 @@ Google Cloud Visionで文字を読み、LLMが購入商品・数量・価格を�
 <p><strong>AIが認識した購入品</strong></p>
 <div id="aiReceiptMeta" class="ai-meta hidden"></div>
 <div id="productCandidates" class="candidate-list"></div>
+<div id="receiptLearningSummary" class="receipt-summary"></div>
+<button id="bulkStockButton" class="primary hidden" onclick="stockRecognizedItems()">認識した商品をまとめて入庫</button>
 
 <div class="raw-toggle">
 <button onclick="toggleRawOcr()">Google VisionのOCR全文を表示 / 非表示</button>
@@ -162,7 +192,7 @@ Google Cloud Visionで文字を読み、LLMが購入商品・数量・価格を�
 </div>
 
 <div class="warning-note">
-Google Visionは「読む」、LLMは「商品を理解する」担当です。APIキーはどちらもSupabase Edge Function側に置き、GitHubには保存しません。
+一度確定した「店舗 + レシート表記 + 商品」の対応はSupabaseに保存します。次回から同じ表記はREIZO自身の記憶として再利用します。
 </div>
 </div>
 <div class="card">
@@ -204,6 +234,11 @@ let scannerRunning = false;
 let scanLock = false;
 let pendingJan = null;
 let receiptPreviewUrl = null;
+let receiptScanner = null;
+let receiptScannerRunning = false;
+let analyzedReceipt = null;
+let receiptMatches = [];
+let pendingReceiptLink = null;
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
@@ -257,6 +292,7 @@ async function signIn() {
 
 async function signOut() {
   await stopScanner();
+  await stopReceiptScanner();
   if (realtimeChannel) {
     await db.removeChannel(realtimeChannel);
     realtimeChannel = null;
@@ -428,37 +464,67 @@ function cancelUnknownProduct() {
   message("");
 }
 
-async function putProductInStock(product) {
-  const { data: existing, error: findError } = await db
+async function findExistingStockForProduct(product) {
+  let { data: existing, error } = await db
     .from("items")
     .select("*")
     .eq("household_id", currentHousehold.id)
-    .eq("jan", product.jan)
+    .eq("product_id", product.id)
     .maybeSingle();
 
-  if (findError) return message(findError.message, "error");
+  if (error) throw error;
+  if (existing) return existing;
+
+  // v0.2以前のJAN在庫との互換用
+  if (product.jan) {
+    const fallback = await db
+      .from("items")
+      .select("*")
+      .eq("household_id", currentHousehold.id)
+      .eq("jan", product.jan)
+      .maybeSingle();
+    if (fallback.error) throw fallback.error;
+    return fallback.data;
+  }
+
+  return null;
+}
+
+async function ensureProductInStock(product) {
+  const existing = await findExistingStockForProduct(product);
 
   if (existing) {
     const { error } = await db
       .from("items")
       .update({
+        product_id: product.id,
         name: product.name,
         storage: product.default_storage,
-        status: "in_stock"
+        status: "in_stock",
+        jan: product.jan || null
       })
       .eq("id", existing.id);
-    if (error) return message(error.message, "error");
+    if (error) throw error;
   } else {
     const { error } = await db
       .from("items")
       .insert({
         household_id: currentHousehold.id,
+        product_id: product.id,
         name: product.name,
         storage: product.default_storage,
         status: "in_stock",
-        jan: product.jan
+        jan: product.jan || null
       });
-    if (error) return message(error.message, "error");
+    if (error) throw error;
+  }
+}
+
+async function putProductInStock(product) {
+  try {
+    await ensureProductInStock(product);
+  } catch (err) {
+    return message(err.message || String(err), "error");
   }
 
   message("✓ " + product.name + " を入庫しました", "success");
@@ -479,6 +545,13 @@ function receiptFileChanged() {
   document.getElementById("productCandidates").innerHTML = "";
   document.getElementById("aiReceiptMeta").innerHTML = "";
   document.getElementById("aiReceiptMeta").classList.add("hidden");
+  document.getElementById("receiptLearningSummary").textContent = "";
+  document.getElementById("bulkStockButton").classList.add("hidden");
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+  document.getElementById("receiptScannerArea").classList.add("hidden");
+  analyzedReceipt = null;
+  receiptMatches = [];
+  pendingReceiptLink = null;
 
   if (receiptPreviewUrl) {
     URL.revokeObjectURL(receiptPreviewUrl);
@@ -545,58 +618,371 @@ function yen(value) {
   return "¥" + n.toLocaleString("ja-JP");
 }
 
-function renderAiReceipt(receipt) {
+function normalizeReceiptKey(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[※＊*]/g, "")
+    .replace(/\s+/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+async function findAliasForItem(receipt, item) {
+  const storeName = String(receipt.store_name || "").trim();
+  const receiptName = String(item.receipt_name || item.normalized_name || "").trim();
+  const storeKey = normalizeReceiptKey(storeName);
+  const receiptKey = normalizeReceiptKey(receiptName);
+
+  if (!receiptKey) return null;
+
+  const { data: alias, error } = await db
+    .from("receipt_aliases")
+    .select("id,product_id")
+    .eq("household_id", currentHousehold.id)
+    .eq("store_key", storeKey)
+    .eq("receipt_key", receiptKey)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!alias) return null;
+
+  const { data: product, error: productError } = await db
+    .from("products")
+    .select("*")
+    .eq("id", alias.product_id)
+    .single();
+
+  if (productError) throw productError;
+  return { alias, product };
+}
+
+async function prepareReceiptLearning(receipt) {
+  analyzedReceipt = receipt;
+  receiptMatches = [];
+
+  const items = Array.isArray(receipt?.items) ? receipt.items : [];
+
+  for (const item of items) {
+    try {
+      const found = await findAliasForItem(receipt, item);
+      receiptMatches.push({
+        item,
+        state: found ? "known" : "unknown",
+        product: found?.product || null,
+        alias: found?.alias || null
+      });
+    } catch (err) {
+      console.error("alias lookup error", err);
+      receiptMatches.push({ item, state: "unknown", product: null, alias: null });
+    }
+  }
+
+  renderReceiptLearning();
+}
+
+function renderReceiptLearning() {
   const box = document.getElementById("productCandidates");
   const meta = document.getElementById("aiReceiptMeta");
+  const summary = document.getElementById("receiptLearningSummary");
+  const bulk = document.getElementById("bulkStockButton");
+
   box.innerHTML = "";
   meta.innerHTML = "";
   meta.classList.add("hidden");
 
-  if (!receipt || !Array.isArray(receipt.items)) {
+  if (!analyzedReceipt || !Array.isArray(analyzedReceipt.items)) {
     box.innerHTML = '<div class="candidate">AI解析結果の形式が正しくありません。</div>';
+    bulk.classList.add("hidden");
     return;
   }
 
   const metaParts = [];
-  if (receipt.store_name) metaParts.push("店舗: " + escapeHtml(String(receipt.store_name)));
-  if (receipt.purchase_date) metaParts.push("購入日: " + escapeHtml(String(receipt.purchase_date)));
+  if (analyzedReceipt.store_name) metaParts.push("店舗: " + escapeHtml(String(analyzedReceipt.store_name)));
+  if (analyzedReceipt.purchase_date) metaParts.push("購入日: " + escapeHtml(String(analyzedReceipt.purchase_date)));
   if (metaParts.length) {
     meta.innerHTML = metaParts.join("<br>");
     meta.classList.remove("hidden");
   }
 
-  if (!receipt.items.length) {
+  if (!receiptMatches.length) {
     box.innerHTML = '<div class="candidate">購入商品を特定できませんでした。OCR全文を確認してください。</div>';
+    bulk.classList.add("hidden");
     return;
   }
 
-  receipt.items.forEach(item => {
+  receiptMatches.forEach((entry, index) => {
+    const item = entry.item;
     const div = document.createElement("div");
     div.className = "ai-item";
 
     const name = String(item.normalized_name || item.receipt_name || "商品名不明");
     const receiptName = String(item.receipt_name || "");
     const quantity = Math.max(1, Number(item.quantity) || 1);
-    const unit = yen(item.unit_price_yen);
-    const total = yen(item.line_total_yen);
 
-    const detailParts = [quantity + "個"];
-    if (unit) detailParts.push("単価 " + unit);
-    if (total) detailParts.push("計 " + total);
+    let stateHtml = "";
+    let actionsHtml = "";
 
-    let original = "";
-    if (receiptName && receiptName !== name) {
-      original = `<div class="ai-item-detail">レシート表記: ${escapeHtml(receiptName)}</div>`;
+    if (entry.state === "known") {
+      stateHtml = `<div class="receipt-state known">✓ REIZO登録済み → ${escapeHtml(entry.product.name)}</div>`;
+    } else if (entry.state === "skip") {
+      stateHtml = '<div class="receipt-state skip">今回は在庫管理しません</div>';
+      actionsHtml = `<div class="receipt-actions"><button onclick="restoreReceiptItem(${index})">管理対象に戻す</button></div>`;
+    } else {
+      stateHtml = '<div class="receipt-state unknown">未登録：この商品を一度だけ教えてください</div>';
+      actionsHtml = `
+        <div class="receipt-actions">
+          <button onclick="startReceiptScanner(${index})">📷 JANをスキャンして覚える</button>
+          <button onclick="openReceiptLinkForm(${index}, null)">JANなしで覚える</button>
+          <button onclick="skipReceiptItem(${index})">今回は管理しない</button>
+        </div>`;
     }
+
+    const original = receiptName && receiptName !== name
+      ? `<div class="ai-item-detail">レシート表記: ${escapeHtml(receiptName)}</div>`
+      : "";
 
     div.innerHTML = `
       <div class="ai-item-name">${escapeHtml(name)}</div>
-      <div class="ai-item-detail">${detailParts.join(" / ")}</div>
+      <div class="ai-item-detail">${quantity}個として認識（現スコープでは在庫は0/1管理）</div>
       ${original}
+      ${stateHtml}
+      ${actionsHtml}
     `;
 
     box.appendChild(div);
   });
+
+  const knownCount = receiptMatches.filter(x => x.state === "known").length;
+  const unknownCount = receiptMatches.filter(x => x.state === "unknown").length;
+  const skipCount = receiptMatches.filter(x => x.state === "skip").length;
+
+  summary.textContent = `登録済み ${knownCount}件 / 未登録 ${unknownCount}件 / 対象外 ${skipCount}件`;
+
+  if (knownCount > 0 && unknownCount === 0) {
+    bulk.textContent = `登録済み${knownCount}商品をまとめて入庫`;
+    bulk.classList.remove("hidden");
+  } else {
+    bulk.classList.add("hidden");
+  }
+}
+
+async function startReceiptScanner(index) {
+  await stopScanner();
+  await stopReceiptScanner();
+  pendingReceiptLink = { index, jan: null };
+
+  const area = document.getElementById("receiptScannerArea");
+  area.classList.remove("hidden");
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+
+  try {
+    receiptScanner = new Html5Qrcode("receiptReader", {
+      formatsToSupport: [
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A
+      ]
+    });
+
+    await receiptScanner.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 250, height: 120 } },
+      async decodedText => {
+        const jan = String(decodedText).trim();
+        await stopReceiptScanner();
+        await handleReceiptJan(index, jan);
+      },
+      () => {}
+    );
+
+    receiptScannerRunning = true;
+    area.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch (err) {
+    console.error(err);
+    receiptScannerRunning = false;
+    area.classList.add("hidden");
+    message("JANカメラを開始できませんでした。カメラ権限を確認してください。", "error");
+  }
+}
+
+async function stopReceiptScanner() {
+  if (receiptScanner && receiptScannerRunning) {
+    try { await receiptScanner.stop(); } catch (err) { console.log(err); }
+  }
+  if (receiptScanner) {
+    try { await receiptScanner.clear(); } catch (_) {}
+  }
+  receiptScanner = null;
+  receiptScannerRunning = false;
+  const area = document.getElementById("receiptScannerArea");
+  if (area) area.classList.add("hidden");
+}
+
+async function handleReceiptJan(index, jan) {
+  const { data: product, error } = await db
+    .from("products")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .eq("jan", jan)
+    .maybeSingle();
+
+  if (error) return message(error.message, "error");
+
+  if (product) {
+    const ok = await saveReceiptAlias(index, product);
+    if (ok) message("✓ 既存商品「" + product.name + "」に紐づけました", "success");
+    return;
+  }
+
+  openReceiptLinkForm(index, jan);
+}
+
+function openReceiptLinkForm(index, jan) {
+  const entry = receiptMatches[index];
+  if (!entry) return;
+
+  pendingReceiptLink = { index, jan: jan || null };
+  const name = String(entry.item.normalized_name || entry.item.receipt_name || "");
+
+  document.getElementById("receiptLinkTarget").textContent = "レシート商品: " + name;
+  document.getElementById("receiptLinkJan").textContent = jan ? ("JAN: " + jan) : "JANなし商品として登録";
+  document.getElementById("receiptLinkProductName").value = name;
+  document.getElementById("receiptLinkStorage").value = "fridge";
+  document.getElementById("receiptLinkForm").classList.remove("hidden");
+  document.getElementById("receiptLinkForm").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function cancelReceiptLink() {
+  pendingReceiptLink = null;
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+}
+
+async function saveReceiptLinkedProduct() {
+  if (!pendingReceiptLink) return;
+
+  const { index, jan } = pendingReceiptLink;
+  const name = document.getElementById("receiptLinkProductName").value.trim();
+  const storage = document.getElementById("receiptLinkStorage").value;
+  if (!name) return message("商品名を入力してください", "error");
+
+  let product = null;
+
+  if (jan) {
+    const result = await db
+      .from("products")
+      .upsert({
+        household_id: currentHousehold.id,
+        jan,
+        name,
+        default_storage: storage
+      }, { onConflict: "household_id,jan" })
+      .select()
+      .single();
+
+    if (result.error) return message(result.error.message, "error");
+    product = result.data;
+  } else {
+    const result = await db
+      .from("products")
+      .insert({
+        household_id: currentHousehold.id,
+        jan: null,
+        name,
+        default_storage: storage
+      })
+      .select()
+      .single();
+
+    if (result.error) return message(result.error.message, "error");
+    product = result.data;
+  }
+
+  const ok = await saveReceiptAlias(index, product);
+  if (!ok) return;
+  pendingReceiptLink = null;
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+  message("✓ 「" + name + "」をREIZOに覚えさせました", "success");
+}
+
+async function saveReceiptAlias(index, product) {
+  const entry = receiptMatches[index];
+  if (!entry || !analyzedReceipt) return;
+
+  const storeName = String(analyzedReceipt.store_name || "").trim();
+  const receiptName = String(entry.item.receipt_name || entry.item.normalized_name || "").trim();
+  const storeKey = normalizeReceiptKey(storeName);
+  const receiptKey = normalizeReceiptKey(receiptName);
+
+  const { data: alias, error } = await db
+    .from("receipt_aliases")
+    .upsert({
+      household_id: currentHousehold.id,
+      product_id: product.id,
+      store_name: storeName,
+      store_key: storeKey,
+      receipt_name: receiptName,
+      receipt_key: receiptKey
+    }, { onConflict: "household_id,store_key,receipt_key" })
+    .select()
+    .single();
+
+  if (error) {
+    message(error.message, "error");
+    return false;
+  }
+
+  receiptMatches[index] = {
+    ...entry,
+    state: "known",
+    product,
+    alias
+  };
+
+  renderReceiptLearning();
+  return true;
+}
+
+function skipReceiptItem(index) {
+  if (!receiptMatches[index]) return;
+  receiptMatches[index].state = "skip";
+  renderReceiptLearning();
+}
+
+function restoreReceiptItem(index) {
+  if (!receiptMatches[index]) return;
+  receiptMatches[index].state = "unknown";
+  renderReceiptLearning();
+}
+
+async function stockRecognizedItems() {
+  const known = receiptMatches.filter(x => x.state === "known" && x.product);
+  if (!known.length) return;
+
+  const uniqueProducts = [];
+  const seen = new Set();
+  for (const entry of known) {
+    if (!seen.has(entry.product.id)) {
+      seen.add(entry.product.id);
+      uniqueProducts.push(entry.product);
+    }
+  }
+
+  const button = document.getElementById("bulkStockButton");
+  button.disabled = true;
+  button.textContent = "入庫中…";
+
+  try {
+    for (const product of uniqueProducts) {
+      await ensureProductInStock(product);
+    }
+    await loadItems();
+    message("✓ " + uniqueProducts.length + "商品をまとめて入庫しました", "success");
+    button.textContent = "✓ 入庫しました";
+  } catch (err) {
+    message("入庫に失敗しました: " + (err.message || String(err)), "error");
+    button.disabled = false;
+    button.textContent = `登録済み${uniqueProducts.length}商品をまとめて入庫`;
+  }
 }
 
 function toggleRawOcr() {
@@ -622,6 +1008,12 @@ async function runReceiptOcr() {
   document.getElementById("productCandidates").innerHTML = "";
   document.getElementById("aiReceiptMeta").innerHTML = "";
   document.getElementById("aiReceiptMeta").classList.add("hidden");
+  document.getElementById("receiptLearningSummary").textContent = "";
+  document.getElementById("bulkStockButton").classList.add("hidden");
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+  analyzedReceipt = null;
+  receiptMatches = [];
+  pendingReceiptLink = null;
   progressWrap.classList.remove("hidden");
   fill.style.width = "10%";
   status.textContent = "画像を準備しています…";
@@ -691,13 +1083,13 @@ async function runReceiptOcr() {
     const receipt = analyzeData?.receipt;
     if (!receipt) throw new Error("AIの商品解析結果が空でした");
 
-    renderAiReceipt(receipt);
+    await prepareReceiptLearning(receipt);
     document.getElementById("rawOcrWrap").classList.add("hidden");
     resultArea.classList.remove("hidden");
 
     fill.style.width = "100%";
     status.textContent = "完了 100%";
-    message("✓ OCR + AI商品解析が完了しました。在庫データはまだ変更していません。", "success");
+    message("✓ OCR + AI解析が完了しました。未知商品だけ一度JANを教えてください。", "success");
 
   } catch (err) {
     console.error(err);
@@ -720,7 +1112,14 @@ async function runReceiptOcr() {
   }
 }
 
-function clearReceiptOcr() {
+async function clearReceiptOcr() {
+  await stopReceiptScanner();
+  analyzedReceipt = null;
+  receiptMatches = [];
+  pendingReceiptLink = null;
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+  document.getElementById("receiptLearningSummary").textContent = "";
+  document.getElementById("bulkStockButton").classList.add("hidden");
   document.getElementById("ocrResult").value = "";
   document.getElementById("productCandidates").innerHTML = "";
   document.getElementById("aiReceiptMeta").innerHTML = "";
