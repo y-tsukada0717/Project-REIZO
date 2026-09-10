@@ -132,10 +132,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.5 レシート学習 + JAN紐づけ</div>
+<div class="section-tag">v0.6 レシート学習 + 購入履歴</div>
 <h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
-Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。覚えた対応はREIZO側に蓄積します。
+Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。入庫時の購入履歴はREIZO側に自動で蓄積します。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
@@ -192,7 +192,7 @@ Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJAN�
 </div>
 
 <div class="warning-note">
-一度確定した「店舗 + レシート表記 + 商品」の対応はSupabaseに保存します。次回から同じ表記はREIZO自身の記憶として再利用します。
+一度確定した「店舗 + レシート表記 + 商品」の対応はSupabaseに保存します。さらに、レシート入庫とJAN入庫は操作を増やさず購入履歴として自動記録します。
 </div>
 </div>
 <div class="card">
@@ -239,6 +239,8 @@ let receiptScannerRunning = false;
 let analyzedReceipt = null;
 let receiptMatches = [];
 let pendingReceiptLink = null;
+let currentReceiptFingerprint = null;
+let currentOcrText = "";
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
@@ -523,11 +525,12 @@ async function ensureProductInStock(product) {
 async function putProductInStock(product) {
   try {
     await ensureProductInStock(product);
+    await recordPurchase([product], "jan");
   } catch (err) {
     return message(err.message || String(err), "error");
   }
 
-  message("✓ " + product.name + " を入庫しました", "success");
+  message("✓ " + product.name + " を入庫しました（購入履歴も記録）", "success");
   await loadItems();
 }
 
@@ -552,6 +555,8 @@ function receiptFileChanged() {
   analyzedReceipt = null;
   receiptMatches = [];
   pendingReceiptLink = null;
+  currentReceiptFingerprint = null;
+  currentOcrText = "";
 
   if (receiptPreviewUrl) {
     URL.revokeObjectURL(receiptPreviewUrl);
@@ -616,6 +621,97 @@ function yen(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return "¥" + n.toLocaleString("ja-JP");
+}
+
+async function sha256Text(value) {
+  try {
+    const bytes = new TextEncoder().encode(String(value || ""));
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch (err) {
+    console.warn("receipt fingerprint unavailable", err);
+    return null;
+  }
+}
+
+async function recordPurchase(products, source, storeName = "", sourceRef = null) {
+  if (!currentHousehold) throw new Error("家情報がありません");
+
+  const uniqueProducts = [];
+  const seen = new Set();
+
+  for (const product of products || []) {
+    if (!product?.id || seen.has(product.id)) continue;
+    seen.add(product.id);
+    uniqueProducts.push(product);
+  }
+
+  if (!uniqueProducts.length) return null;
+
+  let session = null;
+
+  if (sourceRef) {
+    const existingResult = await db
+      .from("purchase_sessions")
+      .select("id")
+      .eq("household_id", currentHousehold.id)
+      .eq("source", source)
+      .eq("source_ref", sourceRef)
+      .maybeSingle();
+
+    if (existingResult.error) throw existingResult.error;
+    session = existingResult.data;
+  }
+
+  if (!session) {
+    const insertResult = await db
+      .from("purchase_sessions")
+      .insert({
+        household_id: currentHousehold.id,
+        source,
+        store_name: String(storeName || "").trim(),
+        source_ref: sourceRef || null
+      })
+      .select("id")
+      .single();
+
+    if (insertResult.error) {
+      // 同じレシートがほぼ同時に二重登録された場合は既存sessionを再利用
+      if (sourceRef && insertResult.error.code === "23505") {
+        const retryResult = await db
+          .from("purchase_sessions")
+          .select("id")
+          .eq("household_id", currentHousehold.id)
+          .eq("source", source)
+          .eq("source_ref", sourceRef)
+          .single();
+        if (retryResult.error) throw retryResult.error;
+        session = retryResult.data;
+      } else {
+        throw insertResult.error;
+      }
+    } else {
+      session = insertResult.data;
+    }
+  }
+
+  const events = uniqueProducts.map(product => ({
+    session_id: session.id,
+    household_id: currentHousehold.id,
+    product_id: product.id
+  }));
+
+  const eventResult = await db
+    .from("purchase_events")
+    .upsert(events, {
+      onConflict: "session_id,product_id",
+      ignoreDuplicates: true
+    });
+
+  if (eventResult.error) throw eventResult.error;
+  return session.id;
 }
 
 function normalizeReceiptKey(value) {
@@ -975,9 +1071,17 @@ async function stockRecognizedItems() {
     for (const product of uniqueProducts) {
       await ensureProductInStock(product);
     }
+
+    await recordPurchase(
+      uniqueProducts,
+      "receipt",
+      analyzedReceipt?.store_name || "",
+      currentReceiptFingerprint
+    );
+
     await loadItems();
-    message("✓ " + uniqueProducts.length + "商品をまとめて入庫しました", "success");
-    button.textContent = "✓ 入庫しました";
+    message("✓ " + uniqueProducts.length + "商品をまとめて入庫し、購入履歴も記録しました", "success");
+    button.textContent = "✓ 入庫・履歴記録済み";
   } catch (err) {
     message("入庫に失敗しました: " + (err.message || String(err)), "error");
     button.disabled = false;
@@ -1014,6 +1118,8 @@ async function runReceiptOcr() {
   analyzedReceipt = null;
   receiptMatches = [];
   pendingReceiptLink = null;
+  currentReceiptFingerprint = null;
+  currentOcrText = "";
   progressWrap.classList.remove("hidden");
   fill.style.width = "10%";
   status.textContent = "画像を準備しています…";
@@ -1051,6 +1157,9 @@ async function runReceiptOcr() {
 
     ocrText = String(ocrData?.text || "").trim();
     if (!ocrText) throw new Error("OCR結果が空でした");
+
+    currentOcrText = ocrText;
+    currentReceiptFingerprint = await sha256Text(ocrText);
 
     // OCR全文はAI解析に失敗しても確認できるよう先に保持
     resultBox.value = ocrText;
@@ -1117,6 +1226,8 @@ async function clearReceiptOcr() {
   analyzedReceipt = null;
   receiptMatches = [];
   pendingReceiptLink = null;
+  currentReceiptFingerprint = null;
+  currentOcrText = "";
   document.getElementById("receiptLinkForm").classList.add("hidden");
   document.getElementById("receiptLearningSummary").textContent = "";
   document.getElementById("bulkStockButton").classList.add("hidden");
