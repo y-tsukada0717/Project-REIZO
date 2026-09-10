@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.8</title>
+<title>REIZO v0.8.1</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -160,10 +160,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.8 REIZO記憶優先 + AI補助</div>
+<div class="section-tag">v0.8.1 表記ゆれ耐性 + REIZO記憶優先</div>
 <h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
-Google Cloud Visionで文字を読み、REIZOが覚えているレシート表記を先に照合します。既知の商品だけで確定できるときはLLMを呼ばず、未知・曖昧なときだけAIに助けてもらいます。
+Google Cloud Visionで文字を読み、記号・空白・ひらがな/カタカナなどの表記ゆれを正規化してからREIZOの記憶と照合します。1文字程度のOCR揺れも高確信なら吸収し、未知・曖昧なときだけAIに助けてもらいます。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
@@ -220,7 +220,7 @@ Google Cloud Visionで文字を読み、REIZOが覚えているレシート表�
 </div>
 
 <div class="warning-note">
-一度確定した「店舗 + レシート表記 + 商品」の対応はREIZOの記憶としてSupabaseに残ります。v0.8ではその記憶を最優先し、十分な確信があるレシートはLLMなしで処理します。重複検知はv0.7.1の仕組みを維持します。
+一度確定した「店舗 + レシート表記 + 商品」の対応はREIZOの記憶としてSupabaseに残ります。v0.8.1ではOCRの表記ゆれを正規化・あいまい照合し、高確信で一致した新しい読み方も安全に記憶します。曖昧ならAIへ回し、重複検知はv0.7.1の仕組みを維持します。
 </div>
 </div>
 <div class="card">
@@ -1118,70 +1118,183 @@ function normalizeReceiptKey(value) {
     .replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
-
-/* =========================================
-   v0.8 REIZO記憶優先のレシート解決
-   ========================================= */
-
-function receiptLines(text) {
-  return String(text || "")
-    .normalize("NFKC")
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
-}
-
-function isReceiptMetadataLine(line) {
-  const value = String(line || "").normalize("NFKC").trim();
-  if (!value) return true;
-
-  // 日付・時刻、レジ情報、支払・税・注意書きなど。
-  const noise = [
-    /20\d{2}\s*[年\/\-.]\s*\d{1,2}/,
-    /\d{1,2}\s*[:：]\s*\d{2}/,
-    /(?:レジ|No\.?|番号|取引|伝票|担当|領収|登録番号|TEL|電話|住所|営業時間)/i,
-    /(?:小計|合計|税|消費税|内税|外税|軽減税率|お釣り|支払|決済|楽天ペイ|クレジット|現金|ポイント)/i,
-    /(?:返品|交換|保管|お買上|ご購入|お客様|ありがとう|またのご来店)/i,
-    /(?:オーダ|端末|承認|ブランド|コード決済)/i,
-    /^\s*[¥￥\\]?\s*[\d,]+\s*円?\s*$/,
-    /^\s*\d+\s*(?:コ|個|点)\s*[x×X]\s*(?:単|@)?\s*\d+/i,
-    /^\s*[\d\s:：\/\-.()]+\s*$/
-  ];
-
-  return noise.some(re => re.test(value));
-}
-
-function findReceiptProductWindow(text) {
-  const lines = receiptLines(text);
-  if (!lines.length) return [];
-
-  let start = 0;
-  const dateIndex = lines.findIndex(line =>
-    /20\d{2}\s*(?:年|[\/\-.])\s*\d{1,2}/.test(line)
+// ひらがな/カタカナのOCR揺れを同じ表記へ寄せる。
+function hiraganaToKatakana(value) {
+  return String(value || "").replace(/[\u3041-\u3096]/g, ch =>
+    String.fromCharCode(ch.charCodeAt(0) + 0x60)
   );
-  if (dateIndex >= 0) start = dateIndex + 1;
+}
 
-  let end = lines.length;
-  for (let i = start; i < lines.length; i++) {
-    if (/(?:^|\s)小計(?:\s|$)/.test(lines[i])) {
-      end = i;
-      break;
+// 商品行の末尾に付く価格・数量表記だけを軽く落とす。
+// 500ml / 3P など商品名そのものの数字はできるだけ残す。
+function cleanReceiptProductText(value) {
+  let text = String(value || "").normalize("NFKC").trim();
+
+  text = text
+    .replace(/^[\s※＊*・●■◆□]+/g, "")
+    .replace(/\s+(?:\d+)\s*(?:コ|個|点)\s*[x×X]\s*(?:単|@)?\s*\d+.*$/i, "")
+    .replace(/\s*[¥￥\\]\s*\d[\d,]*(?:\.\d+)?\s*円?\s*$/i, "")
+    .replace(/\s+\d{1,6}\s*円\s*$/i, "")
+    .replace(/\s+\d{1,5}\s*$/i, "")
+    .trim();
+
+  return text;
+}
+
+function normalizeProductKey(value) {
+  return hiraganaToKatakana(cleanReceiptProductText(value))
+    .toLowerCase()
+    .replace(/[※＊*]/g, "")
+    .replace(/\s+/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function levenshteinDistance(a, b) {
+  a = String(a || "");
+  b = String(b || "");
+
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + cost
+      );
+    }
+
+    previous = current;
+  }
+
+  return previous[b.length];
+}
+
+function productKeySimilarity(aliasKey, candidateKey) {
+  aliasKey = String(aliasKey || "");
+  candidateKey = String(candidateKey || "");
+
+  if (!aliasKey || !candidateKey) return 0;
+  if (aliasKey === candidateKey) return 1;
+
+  const minLen = Math.min(aliasKey.length, candidateKey.length);
+  const maxLen = Math.max(aliasKey.length, candidateKey.length);
+  if (minLen < 4) return 0;
+
+  // OCRが商品名の前後へ少量のゴミを足したケース。
+  if (aliasKey.includes(candidateKey) || candidateKey.includes(aliasKey)) {
+    const ratio = minLen / maxLen;
+    if (ratio >= 0.92) return 0.985;
+    if (ratio >= 0.84) return 0.955;
+    if (ratio >= 0.76) return 0.90;
+  }
+
+  const distance = levenshteinDistance(aliasKey, candidateKey);
+  return Math.max(0, 1 - (distance / maxLen));
+}
+
+function isStrongProductMatch(aliasKey, candidateKey, score) {
+  if (!aliasKey || !candidateKey) return false;
+  if (score >= 0.999) return true;
+
+  const minLen = Math.min(aliasKey.length, candidateKey.length);
+  const distance = levenshteinDistance(aliasKey, candidateKey);
+
+  // 短い商品名は誤紐づけしやすいため厳しくする。
+  if (minLen >= 12) return score >= 0.86 && distance <= 2;
+  if (minLen >= 8) return score >= 0.89 && distance <= 1;
+  if (minLen >= 6) return score >= 0.93 && distance <= 1;
+  return false;
+}
+
+function matchKind(aliasKey, candidateKey, score) {
+  if (aliasKey === candidateKey) return "exact";
+  if (aliasKey.includes(candidateKey) || candidateKey.includes(aliasKey)) return "normalized";
+  if (score > 0) return "fuzzy";
+  return "none";
+}
+
+function bestLineMatchForAlias(alias, windowKeys) {
+  const aliasKey = normalizeProductKey(alias.receipt_name || alias.receipt_key);
+  if (!aliasKey) return null;
+
+  let best = null;
+
+  for (const row of windowKeys) {
+    if (!row.productKey) continue;
+
+    const score = productKeySimilarity(aliasKey, row.productKey);
+    if (!isStrongProductMatch(aliasKey, row.productKey, score)) continue;
+
+    if (!best || score > best.score) {
+      best = {
+        line: row.line,
+        candidateKey: row.productKey,
+        aliasKey,
+        score,
+        kind: matchKind(aliasKey, row.productKey, score)
+      };
     }
   }
 
-  // OCRが「小計」を落としても、商品欄から極端に遠くまで見ない。
-  end = Math.min(end, start + 35);
-  return lines.slice(start, end);
+  return best;
 }
 
-function aliasMatchesLine(aliasKey, lineKey) {
-  if (!aliasKey || !lineKey) return false;
-  if (aliasKey === lineKey) return true;
+async function safelyLearnReceiptVariant(match) {
+  if (!match?.alias || !match?.product || !match?.matchedLine) return;
+  if (match.matchKind === "exact") return;
 
-  // 短すぎるキーの部分一致は誤認しやすいので、4文字以上のみ許可。
-  if (aliasKey.length >= 4 && lineKey.includes(aliasKey)) return true;
-  if (lineKey.length >= 4 && aliasKey.includes(lineKey)) return true;
-  return false;
+  // 自動学習はさらに高い確信だけに限定する。
+  if ((match.matchScore || 0) < 0.94) return;
+
+  const receiptName = cleanReceiptProductText(match.matchedLine);
+  const productKey = normalizeProductKey(receiptName);
+  if (productKey.length < 6) return;
+
+  const storeName = String(match.alias.store_name || "").trim();
+  const storeKey = String(match.alias.store_key || normalizeReceiptKey(storeName));
+  const receiptKey = normalizeReceiptKey(receiptName);
+  if (!receiptKey) return;
+
+  try {
+    const { data: existing, error: lookupError } = await db
+      .from("receipt_aliases")
+      .select("id,product_id")
+      .eq("household_id", currentHousehold.id)
+      .eq("store_key", storeKey)
+      .eq("receipt_key", receiptKey)
+      .maybeSingle();
+
+    if (lookupError) throw lookupError;
+
+    // 既存キーが別商品を指す場合は絶対に上書きしない。
+    if (existing) return;
+
+    const { error: insertError } = await db
+      .from("receipt_aliases")
+      .insert({
+        household_id: currentHousehold.id,
+        product_id: match.product.id,
+        store_name: storeName,
+        store_key: storeKey,
+        receipt_name: receiptName,
+        receipt_key: receiptKey
+      });
+
+    if (insertError && insertError.code !== "23505") {
+      throw insertError;
+    }
+  } catch (err) {
+    // 表記ゆれ学習の失敗で本体処理は止めない。
+    console.warn("receipt variant learning skipped:", err);
+  }
 }
 
 async function loadReceiptMemory() {
@@ -1218,56 +1331,94 @@ async function tryResolveReceiptFromMemory(ocrText) {
   const windowLines = findReceiptProductWindow(ocrText);
   const windowKeys = windowLines.map(line => ({
     line,
-    key: normalizeReceiptKey(line)
+    key: normalizeReceiptKey(line),
+    productKey: normalizeProductKey(line)
   }));
 
-  // 同じreceipt_keyが複数の商品を指す場合、店舗が特定できなければAIへ回す。
-  const productIdsByReceiptKey = new Map();
+  // 正規化後の商品表記が家のDB内で複数商品を指すか確認。
+  const productIdsByAliasKey = new Map();
   for (const alias of memory) {
-    if (!productIdsByReceiptKey.has(alias.receipt_key)) {
-      productIdsByReceiptKey.set(alias.receipt_key, new Set());
+    const aliasKey = normalizeProductKey(alias.receipt_name || alias.receipt_key);
+    if (!aliasKey) continue;
+    if (!productIdsByAliasKey.has(aliasKey)) {
+      productIdsByAliasKey.set(aliasKey, new Set());
     }
-    productIdsByReceiptKey.get(alias.receipt_key).add(alias.product_id);
+    productIdsByAliasKey.get(aliasKey).add(alias.product_id);
   }
 
-  const matches = [];
-  const matchedProducts = new Set();
+  const candidates = [];
 
   for (const alias of memory) {
-    const receiptKey = String(alias.receipt_key || "");
-    if (!receiptKey) continue;
-
-    const lineMatch = windowKeys.find(x => aliasMatchesLine(receiptKey, x.key));
-    if (!lineMatch && !(receiptKey.length >= 4 && fullKey.includes(receiptKey))) continue;
+    const lineMatch = bestLineMatchForAlias(alias, windowKeys);
+    if (!lineMatch) continue;
 
     const storeKey = String(alias.store_key || "");
     const storeMatched = !storeKey || (storeKey.length >= 4 && fullKey.includes(storeKey));
-    const uniqueProductForKey = (productIdsByReceiptKey.get(receiptKey)?.size || 0) === 1;
+    const uniqueProductForKey = (productIdsByAliasKey.get(lineMatch.aliasKey)?.size || 0) === 1;
 
-    // 店舗が読めた、またはこのレシート表記が家のDB内で一意なら採用。
+    // 店舗一致または家のDB内で商品表記が一意であることを要求。
     if (!storeMatched && !uniqueProductForKey) continue;
-    if (matchedProducts.has(alias.product_id)) continue;
 
-    matchedProducts.add(alias.product_id);
-    matches.push({ alias, product: alias.product, matchedLine: lineMatch?.line || alias.receipt_name });
+    candidates.push({
+      alias,
+      product: alias.product,
+      matchedLine: lineMatch.line,
+      matchScore: lineMatch.score,
+      matchKind: lineMatch.kind,
+      aliasKey: lineMatch.aliasKey,
+      candidateKey: lineMatch.candidateKey,
+      storeMatched
+    });
   }
 
-  if (!matches.length) {
+  if (!candidates.length) {
     return { resolved: false, reason: "no_alias_match" };
+  }
+
+  // 同じ商品に複数aliasが当たった場合は最高スコアだけ採用。
+  const bestByProduct = new Map();
+  for (const candidate of candidates) {
+    const prev = bestByProduct.get(candidate.product.id);
+    if (!prev || candidate.matchScore > prev.matchScore) {
+      bestByProduct.set(candidate.product.id, candidate);
+    }
+  }
+  const matches = [...bestByProduct.values()];
+
+  // 1つのOCR行が複数の異なる商品へ高スコアで当たる場合はAIへ回す。
+  const productsByLine = new Map();
+  for (const match of matches) {
+    const key = normalizeProductKey(match.matchedLine);
+    if (!productsByLine.has(key)) productsByLine.set(key, []);
+    productsByLine.get(key).push(match);
+  }
+
+  for (const lineMatches of productsByLine.values()) {
+    if (lineMatches.length <= 1) continue;
+    const sorted = [...lineMatches].sort((a, b) => b.matchScore - a.matchScore);
+    if ((sorted[0].matchScore - sorted[1].matchScore) < 0.06) {
+      return {
+        resolved: false,
+        reason: "ambiguous_fuzzy_match",
+        knownMatches: matches,
+        ambiguousMatches: sorted
+      };
+    }
   }
 
   // 商品欄の「商品名らしいのに既知aliasで説明できない行」を探す。
   const suspiciousLines = [];
   for (const row of windowKeys) {
-    if (!row.key || isReceiptMetadataLine(row.line)) continue;
+    if (!row.productKey || isReceiptMetadataLine(row.line)) continue;
 
-    const covered = matches.some(match =>
-      aliasMatchesLine(String(match.alias.receipt_key || ""), row.key)
-    );
+    const covered = matches.some(match => {
+      const aliasKey = normalizeProductKey(match.alias.receipt_name || match.alias.receipt_key);
+      const score = productKeySimilarity(aliasKey, row.productKey);
+      return isStrongProductMatch(aliasKey, row.productKey, score);
+    });
 
     if (covered) continue;
 
-    // 「※」付き、価格を伴う文字列、ある程度の日本語/英字を持つ行は未知商品の可能性。
     const looksProductLike =
       /[※＊*]/.test(row.line) ||
       /[¥￥\\]\s*\d/.test(row.line) ||
@@ -1276,7 +1427,7 @@ async function tryResolveReceiptFromMemory(ocrText) {
     if (looksProductLike) suspiciousLines.push(row.line);
   }
 
-  // 保守的に運用する。怪しい行が1つでもあればAIへフォールバック。
+  // 保守的に運用。未知っぽい行が残ればAIへフォールバック。
   if (suspiciousLines.length) {
     return {
       resolved: false,
@@ -1286,11 +1437,10 @@ async function tryResolveReceiptFromMemory(ocrText) {
     };
   }
 
-  // 店舗は、OCR中で店舗名まで一致したaliasを優先。
-  const storeMatchedAlias = matches.find(match => {
-    const key = String(match.alias.store_key || "");
-    return key && key.length >= 4 && fullKey.includes(key);
-  });
+  // 高確信で吸収できた新しいOCR表記をREIZOへ蓄積。
+  await Promise.all(matches.map(match => safelyLearnReceiptVariant(match)));
+
+  const storeMatchedAlias = matches.find(match => match.storeMatched);
   const storeName = storeMatchedAlias?.alias.store_name || matches[0].alias.store_name || "";
   const dateTime = extractReceiptDateTime(ocrText);
 
@@ -1298,7 +1448,7 @@ async function tryResolveReceiptFromMemory(ocrText) {
     store_name: storeName || null,
     purchase_date: dateTime.date || null,
     items: matches.map(match => ({
-      receipt_name: match.alias.receipt_name,
+      receipt_name: cleanReceiptProductText(match.matchedLine) || match.alias.receipt_name,
       normalized_name: match.product.name,
       quantity: 1,
       unit_price_yen: null,
@@ -1311,7 +1461,7 @@ async function tryResolveReceiptFromMemory(ocrText) {
     receipt,
     matches: matches.map(match => ({
       item: {
-        receipt_name: match.alias.receipt_name,
+        receipt_name: cleanReceiptProductText(match.matchedLine) || match.alias.receipt_name,
         normalized_name: match.product.name,
         quantity: 1,
         unit_price_yen: null,
@@ -1319,7 +1469,9 @@ async function tryResolveReceiptFromMemory(ocrText) {
       },
       state: "known",
       product: match.product,
-      alias: match.alias
+      alias: match.alias,
+      matchType: match.matchKind,
+      matchScore: match.matchScore
     }))
   };
 }
@@ -1339,25 +1491,72 @@ async function findAliasForItem(receipt, item) {
 
   if (!receiptKey) return null;
 
-  const { data: alias, error } = await db
+  // まず従来どおり完全一致。
+  const { data: exactAlias, error: exactError } = await db
     .from("receipt_aliases")
-    .select("id,product_id")
+    .select("id,product_id,store_name,store_key,receipt_name,receipt_key")
     .eq("household_id", currentHousehold.id)
     .eq("store_key", storeKey)
     .eq("receipt_key", receiptKey)
     .maybeSingle();
 
-  if (error) throw error;
-  if (!alias) return null;
+  if (exactError) throw exactError;
 
-  const { data: product, error: productError } = await db
-    .from("products")
-    .select("*")
-    .eq("id", alias.product_id)
-    .single();
+  if (exactAlias) {
+    const { data: product, error: productError } = await db
+      .from("products")
+      .select("*")
+      .eq("id", exactAlias.product_id)
+      .single();
 
-  if (productError) throw productError;
-  return { alias, product };
+    if (productError) throw productError;
+    return { alias: exactAlias, product, matchType: "exact", matchScore: 1 };
+  }
+
+  // AIを経由した場合でも、表記ゆれだけなら既存知識へ戻せるようあいまい照合。
+  const memory = await loadReceiptMemory();
+  const candidateKey = normalizeProductKey(receiptName);
+  if (!candidateKey) return null;
+
+  const scored = [];
+
+  for (const alias of memory) {
+    const aliasStoreKey = String(alias.store_key || "");
+    if (storeKey && aliasStoreKey && aliasStoreKey !== storeKey) continue;
+
+    const aliasKey = normalizeProductKey(alias.receipt_name || alias.receipt_key);
+    const score = productKeySimilarity(aliasKey, candidateKey);
+    if (!isStrongProductMatch(aliasKey, candidateKey, score)) continue;
+
+    scored.push({ alias, product: alias.product, score, aliasKey });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  if (!scored.length) return null;
+
+  // 競合候補が近すぎる場合は自動確定しない。
+  if (scored.length > 1 && scored[0].product.id !== scored[1].product.id) {
+    if ((scored[0].score - scored[1].score) < 0.06) return null;
+  }
+
+  const best = scored[0];
+  const matchType = matchKind(best.aliasKey, candidateKey, best.score);
+
+  // AIが返した新しいレシート表記も、高確信なら知識として追加。
+  await safelyLearnReceiptVariant({
+    alias: best.alias,
+    product: best.product,
+    matchedLine: receiptName,
+    matchScore: best.score,
+    matchKind: matchType
+  });
+
+  return {
+    alias: best.alias,
+    product: best.product,
+    matchType,
+    matchScore: best.score
+  };
 }
 
 async function prepareReceiptLearning(receipt) {
@@ -1373,7 +1572,9 @@ async function prepareReceiptLearning(receipt) {
         item,
         state: found ? "known" : "unknown",
         product: found?.product || null,
-        alias: found?.alias || null
+        alias: found?.alias || null,
+        matchType: found?.matchType || null,
+        matchScore: found?.matchScore || null
       });
     } catch (err) {
       console.error("alias lookup error", err);
@@ -1404,7 +1605,7 @@ function renderReceiptLearning() {
   if (analyzedReceipt.store_name) metaParts.push("店舗: " + escapeHtml(String(analyzedReceipt.store_name)));
   if (analyzedReceipt.purchase_date) metaParts.push("購入日: " + escapeHtml(String(analyzedReceipt.purchase_date)));
   if (currentReceiptAnalysisMode === "memory") {
-    metaParts.push("処理: REIZO記憶のみ（LLM未使用）");
+    metaParts.push("処理: REIZO記憶のみ（正規化・表記ゆれ照合 / LLM未使用）");
   } else if (currentReceiptAnalysisMode === "ai") {
     metaParts.push("処理: REIZO記憶で未確定 → AI補助");
   }
@@ -1432,7 +1633,12 @@ function renderReceiptLearning() {
     let actionsHtml = "";
 
     if (entry.state === "known") {
-      stateHtml = `<div class="receipt-state known">✓ REIZO登録済み → ${escapeHtml(entry.product.name)}</div>`;
+      const fuzzy = entry.matchType && entry.matchType !== "exact";
+      const pct = entry.matchScore ? Math.round(entry.matchScore * 100) : null;
+      const matchNote = fuzzy
+        ? ` <span class="badge">表記ゆれ一致${pct ? ` ${pct}%` : ""}</span>`
+        : "";
+      stateHtml = `<div class="receipt-state known">✓ REIZO登録済み → ${escapeHtml(entry.product.name)}${matchNote}</div>`;
     } else if (entry.state === "skip") {
       stateHtml = '<div class="receipt-state skip">今回は在庫管理しません</div>';
       actionsHtml = `<div class="receipt-actions"><button onclick="restoreReceiptItem(${index})">管理対象に戻す</button></div>`;
@@ -1644,7 +1850,9 @@ async function saveReceiptAlias(index, product) {
     ...entry,
     state: "known",
     product,
-    alias
+    alias,
+    matchType: "exact",
+    matchScore: 1
   };
 
   renderReceiptLearning();
