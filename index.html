@@ -7,7 +7,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@7/dist/tesseract.min.js"></script>
 
 <style>
 body{font-family:system-ui,sans-serif;margin:0;background:#f6f6f6;color:#222}
@@ -121,36 +120,20 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.3.2 OCR改善テスト</div>
+<div class="section-tag">v0.4 Google Cloud Vision</div>
 <h2>🧾 レシートを読む</h2>
 <p class="receipt-help">
-レシートをなるべく画面中央・縦向き・真上から撮ってください。今回は在庫を変更しません。
+Google Cloud Visionでレシートを読み取ります。このテストでは在庫は変更しません。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
 
-<div class="crop-control">
-<label for="cropWidth">
-  <span>レシートの横幅</span>
-  <strong id="cropWidthValue">46%</strong>
-</label>
-<input id="cropWidth" type="range" min="32" max="70" value="46" step="1" oninput="cropWidthChanged()">
-<p class="receipt-help">加工画像に机や周囲の物が残るなら狭く、レシートの端が切れるなら広くします。</p>
-</div>
-
 <div id="originalPreviewArea" class="hidden">
-<div class="process-title">元画像</div>
-<img id="receiptPreview" class="receipt-preview" alt="レシート元画像">
+<div class="process-title">送信するレシート画像</div>
+<img id="receiptPreview" class="receipt-preview" alt="レシート画像">
 </div>
 
-<div id="processedPreviewArea" class="hidden">
-<div class="process-title">OCRに渡す加工後画像</div>
-<canvas id="processedCanvas" class="processed-preview"></canvas>
-<p class="receipt-help">レシートだけが切り抜かれ、黒文字・白背景になっていれば成功です。</p>
-</div>
-
-<button id="preprocessButton" class="primary" onclick="previewPreprocess()">① 画像を加工する</button>
-<button id="ocrButton" class="primary" onclick="runReceiptOcr()">② 加工画像をOCRする</button>
+<button id="ocrButton" class="primary" onclick="runReceiptOcr()">Google Visionで読み取る</button>
 
 <div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
 <div class="ocr-progress-bar">
@@ -167,17 +150,16 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 <button onclick="toggleRawOcr()">OCR全文を表示 / 非表示</button>
 </div>
 <div id="rawOcrWrap" class="raw-wrap hidden">
-<p><strong>OCR認識結果（全文）</strong></p>
+<p><strong>Google Vision 認識結果（全文）</strong></p>
 <textarea id="ocrResult" class="ocr-result" readonly></textarea>
 </div>
 <button onclick="clearReceiptOcr()">結果をクリア</button>
 </div>
 
 <div class="warning-note">
-この版ではレシートを中央基準で厳密に切り抜き、文字を潰しにくいグレースケール補正でOCRします。さらにOCR全文から「商品候補」だけを抽出します。在庫はまだ変更しません。
+画像はブラウザ側で縮小してからSupabase Edge Functionへ送り、Google Cloud VisionのDOCUMENT_TEXT_DETECTIONでOCRします。GoogleのAPIキーはブラウザやGitHubには置きません。
 </div>
 </div>
-
 <div class="card">
 <h2>手動で追加</h2>
 <input id="itemName" placeholder="例：キャベツ">
@@ -216,9 +198,7 @@ let html5QrCode = null;
 let scannerRunning = false;
 let scanLock = false;
 let pendingJan = null;
-let ocrWorker = null;
 let receiptPreviewUrl = null;
-let processedReady = false;
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
@@ -481,18 +461,17 @@ async function putProductInStock(product) {
 }
 
 /* =========================================
-   v0.3.2 レシート前処理 + 商品候補抽出
+   v0.4 Google Cloud Vision OCR
    ========================================= */
 
 function receiptFileChanged() {
   const input = document.getElementById("receiptFile");
   const preview = document.getElementById("receiptPreview");
 
-  processedReady = false;
-  document.getElementById("processedPreviewArea").classList.add("hidden");
   document.getElementById("ocrResultArea").classList.add("hidden");
   document.getElementById("ocrProgressWrap").classList.add("hidden");
   document.getElementById("ocrResult").value = "";
+  document.getElementById("productCandidates").innerHTML = "";
 
   if (receiptPreviewUrl) {
     URL.revokeObjectURL(receiptPreviewUrl);
@@ -527,196 +506,30 @@ async function loadImageFromFile(file) {
   });
 }
 
-function cropWidthChanged() {
-  const slider = document.getElementById("cropWidth");
-  document.getElementById("cropWidthValue").textContent = slider.value + "%";
-  processedReady = false;
-  document.getElementById("processedPreviewArea").classList.add("hidden");
-  document.getElementById("ocrResultArea").classList.add("hidden");
-  message("横幅を変更しました。もう一度『① 画像を加工する』を押してください。");
-}
+async function imageFileToBase64(file) {
+  const img = await loadImageFromFile(file);
 
-function detectReceiptBounds(img) {
-  // v0.3.2: 家庭での撮影は「レシートを画面中央に置く」運用に寄せる。
-  // 背景の物体を文字領域として誤検出するより、中央の幅を明示した方が安定する。
-  const widthPercent = Number(document.getElementById("cropWidth")?.value || 46) / 100;
-  const cropWidth = Math.max(1, Math.round(img.naturalWidth * widthPercent));
-  const x = Math.max(0, Math.round((img.naturalWidth - cropWidth) / 2));
+  // Edge Functionへ大きすぎる画像を送らないよう縮小する。
+  // レシート文字の解像度は残したいので長辺は最大2200px。
+  const maxSide = 2200;
+  const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+  const width = Math.max(1, Math.round(img.naturalWidth * scale));
+  const height = Math.max(1, Math.round(img.naturalHeight * scale));
 
-  // 縦方向だけは、中央領域の暗い画素から上下端を推定する。
-  const maxAnalysisWidth = 650;
-  const scale = Math.min(1, maxAnalysisWidth / img.naturalWidth);
-  const w = Math.max(1, Math.round(img.naturalWidth * scale));
-  const h = Math.max(1, Math.round(img.naturalHeight * scale));
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(img, 0, 0, w, h);
-  const data = ctx.getImageData(0, 0, w, h).data;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
 
-  const left = Math.max(0, Math.round(x * scale));
-  const right = Math.min(w, Math.round((x + cropWidth) * scale));
-  const rowScores = new Float32Array(h);
-  const darkThreshold = 190;
-
-  for (let y = 0; y < h; y++) {
-    let dark = 0;
-    for (let xx = left; xx < right; xx += 2) {
-      const i = (y * w + xx) * 4;
-      const g = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      if (g < darkThreshold) dark++;
-    }
-    rowScores[y] = dark;
-  }
-
-  // 行スコアを平滑化し、レシート文字が続く縦範囲を拾う。
-  const radius = Math.max(3, Math.round(h * 0.006));
-  const smooth = new Float32Array(h);
-  for (let y = 0; y < h; y++) {
-    let sum = 0, count = 0;
-    for (let yy = Math.max(0, y - radius); yy <= Math.min(h - 1, y + radius); yy++) {
-      sum += rowScores[yy];
-      count++;
-    }
-    smooth[y] = sum / count;
-  }
-
-  const threshold = Math.max(1.5, (right - left) * 0.004);
-  let top = h, bottom = -1;
-  for (let y = 0; y < h; y++) {
-    if (smooth[y] > threshold) {
-      top = Math.min(top, y);
-      bottom = Math.max(bottom, y);
-    }
-  }
-
-  if (bottom <= top || bottom - top < h * 0.30) {
-    top = Math.round(h * 0.02);
-    bottom = Math.round(h * 0.98);
-  }
-
-  const margin = Math.round((bottom - top) * 0.025);
-  top = Math.max(0, top - margin);
-  bottom = Math.min(h - 1, bottom + margin);
-
-  return {
-    x,
-    y: Math.round(top / scale),
-    width: cropWidth,
-    height: Math.max(1, Math.round((bottom - top + 1) / scale))
-  };
-}
-
-function enhanceGrayscale(canvas) {
-  // Tesseract自身にも二値化処理があるため、ここでは文字を潰しやすい強い二値化を避ける。
-  // 背景を白く寄せつつ、文字側だけコントラストを軽く上げる。
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const p = img.data;
-
-  for (let i = 0; i < p.length; i += 4) {
-    let g = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
-    g = (g - 128) * 1.22 + 138;
-    if (g > 228) g = 255;
-    g = Math.max(0, Math.min(255, g));
-    p[i] = p[i + 1] = p[i + 2] = g;
-    p[i + 3] = 255;
-  }
-
-  ctx.putImageData(img, 0, 0);
-}
-
-async function buildProcessedReceipt() {
-  const input = document.getElementById("receiptFile");
-  if (!input.files || !input.files[0]) {
-    throw new Error("先にレシート画像を選んでください");
-  }
-
-  const img = await loadImageFromFile(input.files[0]);
-  const bounds = detectReceiptBounds(img);
-
-  // 横幅1000px前後に揃えて文字を十分大きくする。
-  const targetWidth = Math.round(Math.min(1150, Math.max(950, bounds.width * 2.4)));
-  const scale = targetWidth / bounds.width;
-  const targetHeight = Math.max(1, Math.round(bounds.height * scale));
-
-  const canvas = document.getElementById("processedCanvas");
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
-
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const ctx = canvas.getContext("2d");
   ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, targetWidth, targetHeight);
+  ctx.fillRect(0, 0, width, height);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(
-    img,
-    bounds.x, bounds.y, bounds.width, bounds.height,
-    0, 0, targetWidth, targetHeight
-  );
+  ctx.drawImage(img, 0, 0, width, height);
 
-  enhanceGrayscale(canvas);
-  processedReady = true;
-  document.getElementById("processedPreviewArea").classList.remove("hidden");
-  return canvas;
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+  return dataUrl.split(",")[1];
 }
-
-async function previewPreprocess() {
-  const button = document.getElementById("preprocessButton");
-  button.disabled = true;
-  button.textContent = "加工中…";
-  message("レシート画像を加工しています…");
-
-  try {
-    await buildProcessedReceipt();
-    message("✓ 加工しました。下の白黒画像を確認してください。", "success");
-  } catch (err) {
-    console.error(err);
-    message(err.message || "画像加工に失敗しました。", "error");
-  } finally {
-    button.disabled = false;
-    button.textContent = "① 画像を加工する";
-  }
-}
-
-function updateOcrProgress(m) {
-  const wrap = document.getElementById("ocrProgressWrap");
-  const fill = document.getElementById("ocrProgressFill");
-  const status = document.getElementById("ocrStatus");
-  wrap.classList.remove("hidden");
-
-  const pct = typeof m.progress === "number" ? Math.round(m.progress * 100) : 0;
-  fill.style.width = pct + "%";
-
-  const labels = {
-    "loading tesseract core": "OCRエンジンを読み込み中",
-    "initializing tesseract": "OCRエンジンを初期化中",
-    "loading language traineddata": "日本語データを読み込み中",
-    "initializing api": "認識準備中",
-    "recognizing text": "レシートを読み取り中"
-  };
-
-  status.textContent = (labels[m.status] || m.status || "処理中") +
-    (typeof m.progress === "number" ? ` ${pct}%` : "");
-}
-
-async function getOcrWorker() {
-  if (ocrWorker) return ocrWorker;
-
-  ocrWorker = await Tesseract.createWorker(["jpn", "eng"], 1, {
-    logger: updateOcrProgress
-  });
-
-  await ocrWorker.setParameters({
-    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-    preserve_interword_spaces: "1",
-    user_defined_dpi: "300"
-  });
-
-  return ocrWorker;
-}
-
 
 function cleanOcrLine(line) {
   return line
@@ -734,7 +547,7 @@ function extractProductCandidates(text) {
     .map(cleanOcrLine)
     .filter(Boolean);
 
-  const stopWords = ["小計", "合計", "楽天ペイ", "現金", "クレジット", "お釣", "決済", "消費税", "外8%", "内8%", "税合計"];
+  const stopWords = ["小計", "合計", "楽天ペイ", "現金", "クレジット", "お釣", "決済", "消費税", "税合計"];
   const rejectWords = [
     "領収", "返品", "交換", "登録番号", "TEL", "ホームセンター", "印刷面", "軽減税率",
     "お買上点数", "コード決済", "決済ブランド", "決済金額", "オーダ", "明細ID", "レシートNo", "店No"
@@ -756,7 +569,7 @@ function extractProductCandidates(text) {
   const candidates = [];
 
   for (let i = 0; i < segment.length; i++) {
-    let line = segment[i];
+    const line = segment[i];
     if (rejectWords.some(w => line.includes(w))) continue;
     if (/^[¥￥\\]?\s*\d+[,.]?\d*\s*$/.test(line)) continue;
     if (/^[*＊#=\-\s]+$/.test(line)) continue;
@@ -767,7 +580,6 @@ function extractProductCandidates(text) {
     const looksCount = /\d+\s*コ\s*[x×X]\s*単?\s*\d+/i.test(line);
     const hasPrice = /[¥￥\\]\s*\d+|\d{2,5}\s*円/.test(line);
 
-    // 数量行は直前の商品候補に補足として付ける。
     if (looksCount && candidates.length) {
       candidates[candidates.length - 1].detail = line;
       continue;
@@ -776,7 +588,6 @@ function extractProductCandidates(text) {
     if (!(productMark || hasJapanese || hasLatinWord)) continue;
     if (line.length < 3) continue;
 
-    // 先頭の記号・価格・OCRゴミを軽く除去。商品名は原文を残しすぎない。
     let display = line
       .replace(/^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+/, "")
       .replace(/[¥￥\\]\s*\d+.*$/, "")
@@ -794,7 +605,6 @@ function extractProductCandidates(text) {
     candidates.push({ display, raw: line, detail: "", score });
   }
 
-  // 同じような行を重複排除し、怪しい低スコア行を後ろへ。
   const seen = new Set();
   return candidates
     .filter(c => {
@@ -812,7 +622,7 @@ function renderProductCandidates(candidates) {
   box.innerHTML = "";
 
   if (!candidates.length) {
-    box.innerHTML = '<div class="candidate">商品候補をうまく抽出できませんでした。OCR全文を確認してください。</div>';
+    box.innerHTML = '<div class="candidate">商品候補を抽出できませんでした。OCR全文を確認してください。</div>';
     return;
   }
 
@@ -835,6 +645,7 @@ async function runReceiptOcr() {
   const button = document.getElementById("ocrButton");
   const resultArea = document.getElementById("ocrResultArea");
   const resultBox = document.getElementById("ocrResult");
+  const progressWrap = document.getElementById("ocrProgressWrap");
   const fill = document.getElementById("ocrProgressFill");
   const status = document.getElementById("ocrStatus");
 
@@ -843,34 +654,62 @@ async function runReceiptOcr() {
   }
 
   button.disabled = true;
-  button.textContent = "読み取り中…";
+  button.textContent = "Google Visionで読み取り中…";
   resultArea.classList.add("hidden");
-  fill.style.width = "0%";
-  status.textContent = "準備中…";
-  document.getElementById("ocrProgressWrap").classList.remove("hidden");
-  message("加工画像をOCRしています…");
+  progressWrap.classList.remove("hidden");
+  fill.style.width = "12%";
+  status.textContent = "画像を準備しています…";
+  message("Google Cloud Visionへレシートを送っています…");
 
   try {
-    if (!processedReady) await buildProcessedReceipt();
-    const canvas = document.getElementById("processedCanvas");
-    const worker = await getOcrWorker();
+    const imageBase64 = await imageFileToBase64(input.files[0]);
 
-    const { data: { text } } = await worker.recognize(canvas);
+    fill.style.width = "45%";
+    status.textContent = "Google Cloud VisionでOCR中…";
 
-    resultBox.value = (text || "").trim();
+    const { data, error } = await db.functions.invoke("receipt-ocr", {
+      body: { imageBase64 }
+    });
+
+    if (error) {
+      console.error("Edge Function error:", error);
+      let detail = error.message || "Edge Functionの呼び出しに失敗しました";
+      try {
+        if (error.context) {
+          const body = await error.context.json();
+          detail = body?.details?.error?.message || body?.error || detail;
+        }
+      } catch (_) {}
+      throw new Error(detail);
+    }
+
+    if (data?.error) {
+      const detail = data?.details?.error?.message || data.error;
+      throw new Error(detail);
+    }
+
+    const text = String(data?.text || "").trim();
+    if (!text) {
+      throw new Error("OCR結果が空でした");
+    }
+
+    fill.style.width = "100%";
+    status.textContent = "完了 100%";
+
+    resultBox.value = text;
     renderProductCandidates(extractProductCandidates(text));
     document.getElementById("rawOcrWrap").classList.add("hidden");
     resultArea.classList.remove("hidden");
-    fill.style.width = "100%";
-    status.textContent = "完了 100%";
-    message("✓ OCRと商品候補抽出が完了しました。在庫データは変更していません。", "success");
+
+    message("✓ Google Cloud Vision OCRが完了しました。在庫データは変更していません。", "success");
   } catch (err) {
     console.error(err);
-    message("OCRに失敗しました。加工画像を確認してからもう一度試してください。", "error");
+    fill.style.width = "100%";
     status.textContent = "OCRエラー";
+    message("OCRに失敗しました: " + (err.message || String(err)), "error");
   } finally {
     button.disabled = false;
-    button.textContent = "② 加工画像をOCRする";
+    button.textContent = "Google Visionで読み取る";
   }
 }
 
