@@ -1,1 +1,653 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>REIZO</title>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      background: #f6f6f6;
+      color: #222;
+    }
+
+    main {
+      max-width: 520px;
+      margin: auto;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 4px;
+    }
+
+    .sub {
+      color: #666;
+      margin-top: 0;
+    }
+
+    .card {
+      background: white;
+      padding: 16px;
+      border-radius: 14px;
+      margin-bottom: 16px;
+    }
+
+    input, select, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin-top: 8px;
+      font-size: 16px;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .row > * {
+      flex: 1;
+    }
+
+    .item {
+      background: white;
+      padding: 14px;
+      border-radius: 12px;
+      margin-bottom: 10px;
+    }
+
+    .item-name {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .status-buttons {
+      display: flex;
+      gap: 6px;
+    }
+
+    .status-buttons button {
+      padding: 8px;
+      font-size: 14px;
+    }
+
+    .active {
+      font-weight: bold;
+      outline: 2px solid #222;
+    }
+
+    .danger {
+      margin-top: 8px;
+      font-size: 13px;
+    }
+
+    #message {
+      margin: 12px 0;
+      font-weight: 600;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .invite {
+      font-family: monospace;
+      font-size: 18px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+
+<body>
+<main>
+
+  <h1>REIZO</h1>
+  <p class="sub">わが家の共有冷蔵庫</p>
+
+  <div id="message"></div>
+
+  <!-- ログイン -->
+  <section id="authView" class="card hidden">
+    <h2>ログイン</h2>
+
+    <input id="email" type="email" placeholder="メールアドレス">
+    <input id="password" type="password" placeholder="パスワード">
+
+    <div class="row">
+      <button onclick="signIn()">ログイン</button>
+      <button onclick="signUp()">新規登録</button>
+    </div>
+  </section>
+
+  <!-- 家を作る・参加 -->
+  <section id="householdView" class="card hidden">
+    <h2>家を設定</h2>
+
+    <p>新しく家を作る</p>
+    <input id="houseName" placeholder="例：わが家">
+    <button onclick="createHousehold()">家を作る</button>
+
+    <hr>
+
+    <p>招待コードで参加</p>
+    <input id="inviteInput" placeholder="招待コード">
+    <button onclick="joinHousehold()">参加する</button>
+
+    <button onclick="signOut()">ログアウト</button>
+  </section>
+
+  <!-- アプリ本体 -->
+  <section id="appView" class="hidden">
+
+    <div class="card">
+      <h2 id="householdName">わが家</h2>
+
+      <p>招待コード</p>
+      <div id="inviteCode" class="invite"></div>
+
+      <button onclick="signOut()">ログアウト</button>
+    </div>
+
+    <div class="card">
+      <h2>食品を追加</h2>
+
+      <input id="itemName" placeholder="例：牛乳">
+
+      <select id="storage">
+        <option value="fridge">冷蔵</option>
+        <option value="freezer">冷凍</option>
+        <option value="pantry">常温</option>
+      </select>
+
+      <button onclick="addItem()">追加</button>
+    </div>
+
+    <h2>在庫</h2>
+    <div id="items"></div>
+
+    <h2>買い物候補</h2>
+    <div id="shopping"></div>
+
+  </section>
+
+</main>
+
+<script>
+  // ==========================================
+  // ここだけ自分のSupabase情報に変更
+  // ==========================================
+
+  const SUPABASE_URL =
+    "https://faavfjrkdgnufhpqjkks.supabase.co";
+
+  const SUPABASE_KEY =
+    "sb_publishable_YNdPWnNeuENGqHlUO1iwCQ_pdbaqpe9";
+
+  // ==========================================
+
+  const db = window.supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_KEY
+  );
+
+  let currentHousehold = null;
+  let realtimeChannel = null;
+
+  function show(id) {
+    ["authView", "householdView", "appView"].forEach(x => {
+      document.getElementById(x).classList.add("hidden");
+    });
+
+    document.getElementById(id).classList.remove("hidden");
+  }
+
+  function message(text) {
+    document.getElementById("message").textContent = text || "";
+  }
+
+  async function signUp() {
+    message("");
+
+    const email =
+      document.getElementById("email").value.trim();
+
+    const password =
+      document.getElementById("password").value;
+
+    const { data, error } =
+      await db.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo:
+            location.origin + location.pathname
+        }
+      });
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    if (data.session) {
+      message("登録しました");
+      await boot();
+    } else {
+      message("確認メールを送信しました。メール内のリンクを開いてください。");
+    }
+  }
+
+  async function signIn() {
+    message("");
+
+    const email =
+      document.getElementById("email").value.trim();
+
+    const password =
+      document.getElementById("password").value;
+
+    const { error } =
+      await db.auth.signInWithPassword({
+        email,
+        password
+      });
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    await boot();
+  }
+
+  async function signOut() {
+    if (realtimeChannel) {
+      await db.removeChannel(realtimeChannel);
+      realtimeChannel = null;
+    }
+
+    currentHousehold = null;
+
+    await db.auth.signOut();
+
+    message("");
+    show("authView");
+  }
+
+  async function boot() {
+
+    const { data } =
+      await db.auth.getSession();
+
+    if (!data.session) {
+      show("authView");
+      return;
+    }
+
+    const { data: membership, error } =
+      await db
+        .from("household_members")
+        .select("household_id")
+        .limit(1)
+        .maybeSingle();
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    if (!membership) {
+      show("householdView");
+      return;
+    }
+
+    await openHousehold(
+      membership.household_id
+    );
+  }
+
+  async function createHousehold() {
+
+    const name =
+      document.getElementById("houseName")
+        .value.trim();
+
+    if (!name) {
+      message("家の名前を入力してください");
+      return;
+    }
+
+    const { data, error } =
+      await db.rpc(
+        "create_household",
+        { p_name: name }
+      );
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    await openHousehold(
+      data[0].household_id
+    );
+  }
+
+  async function joinHousehold() {
+
+    const code =
+      document.getElementById("inviteInput")
+        .value.trim();
+
+    if (!code) {
+      message("招待コードを入力してください");
+      return;
+    }
+
+    const { data, error } =
+      await db.rpc(
+        "join_household",
+        { p_invite_code: code }
+      );
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    await openHousehold(data);
+  }
+
+  async function openHousehold(id) {
+
+    const { data, error } =
+      await db
+        .from("households")
+        .select("id,name,invite_code")
+        .eq("id", id)
+        .single();
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    currentHousehold = data;
+
+    document.getElementById(
+      "householdName"
+    ).textContent = data.name;
+
+    document.getElementById(
+      "inviteCode"
+    ).textContent = data.invite_code;
+
+    show("appView");
+
+    await loadItems();
+    startRealtime();
+  }
+
+  async function addItem() {
+
+    const name =
+      document.getElementById("itemName")
+        .value.trim();
+
+    const storage =
+      document.getElementById("storage")
+        .value;
+
+    if (!name) {
+      message("商品名を入力してください");
+      return;
+    }
+
+    const { error } =
+      await db
+        .from("items")
+        .insert({
+          household_id:
+            currentHousehold.id,
+          name,
+          storage,
+          status: "in_stock"
+        });
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    document.getElementById(
+      "itemName"
+    ).value = "";
+
+    await loadItems();
+  }
+
+  async function loadItems() {
+
+    if (!currentHousehold) return;
+
+    const { data, error } =
+      await db
+        .from("items")
+        .select("*")
+        .eq(
+          "household_id",
+          currentHousehold.id
+        )
+        .order(
+          "created_at",
+          { ascending: true }
+        );
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    renderItems(data || []);
+  }
+
+  function renderItems(items) {
+
+    const stock =
+      document.getElementById("items");
+
+    const shopping =
+      document.getElementById("shopping");
+
+    stock.innerHTML = "";
+    shopping.innerHTML = "";
+
+    const storageNames = {
+      fridge: "冷蔵",
+      freezer: "冷凍",
+      pantry: "常温"
+    };
+
+    items.forEach(item => {
+
+      const div =
+        document.createElement("div");
+
+      div.className = "item";
+
+      div.innerHTML = `
+        <div class="item-name">
+          ${escapeHtml(item.name)}
+          <small>
+            (${storageNames[item.storage]})
+          </small>
+        </div>
+
+        <div class="status-buttons">
+
+          <button
+            class="${item.status === "in_stock" ? "active" : ""}"
+            onclick="setStatus('${item.id}','in_stock')">
+            ある
+          </button>
+
+          <button
+            class="${item.status === "low" ? "active" : ""}"
+            onclick="setStatus('${item.id}','low')">
+            少ない
+          </button>
+
+          <button
+            class="${item.status === "out" ? "active" : ""}"
+            onclick="setStatus('${item.id}','out')">
+            ない
+          </button>
+
+        </div>
+
+        <button
+          class="danger"
+          onclick="deleteItem('${item.id}')">
+          削除
+        </button>
+      `;
+
+      stock.appendChild(div);
+
+      if (
+        item.status === "out" ||
+        item.status === "low"
+      ) {
+
+        const shop =
+          document.createElement("div");
+
+        shop.className = "item";
+
+        shop.textContent =
+          item.status === "out"
+            ? "🛒 " + item.name
+            : "⚠️ " + item.name + "（少ない）";
+
+        shopping.appendChild(shop);
+      }
+    });
+
+    if (!items.length) {
+      stock.textContent =
+        "まだ食品がありません";
+    }
+
+    if (
+      !items.some(
+        x =>
+          x.status === "out" ||
+          x.status === "low"
+      )
+    ) {
+      shopping.textContent =
+        "買い物候補はありません";
+    }
+  }
+
+  async function setStatus(
+    id,
+    status
+  ) {
+
+    const { error } =
+      await db
+        .from("items")
+        .update({ status })
+        .eq("id", id);
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    await loadItems();
+  }
+
+  async function deleteItem(id) {
+
+    if (!confirm("削除しますか？"))
+      return;
+
+    const { error } =
+      await db
+        .from("items")
+        .delete()
+        .eq("id", id);
+
+    if (error) {
+      message(error.message);
+      return;
+    }
+
+    await loadItems();
+  }
+
+  function startRealtime() {
+
+    if (realtimeChannel) {
+      db.removeChannel(
+        realtimeChannel
+      );
+    }
+
+    realtimeChannel =
+      db.channel(
+        "items-" +
+        currentHousehold.id
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "items",
+          filter:
+            "household_id=eq." +
+            currentHousehold.id
+        },
+        () => {
+          loadItems();
+        }
+      )
+      .subscribe();
+  }
+
+  function escapeHtml(text) {
+    const d =
+      document.createElement("div");
+
+    d.textContent = text;
+
+    return d.innerHTML;
+  }
+
+  db.auth.onAuthStateChange(
+    (_event, session) => {
+      setTimeout(() => {
+        if (session) {
+          boot();
+        }
+      }, 0);
+    }
+  );
+
+  boot();
+</script>
+
+</body>
+</html>
