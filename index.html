@@ -50,6 +50,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .candidate-list{display:grid;gap:8px;margin-top:10px}
 .candidate{background:#f7f7f7;padding:11px 12px;border-radius:10px;font-size:15px;line-height:1.35}
 .candidate small{display:block;color:#777;margin-top:3px}
+.ai-meta{background:#f7f7f7;padding:10px 12px;border-radius:10px;margin:10px 0;font-size:14px;line-height:1.5}
+.ai-item{background:#fff;border:1px solid #e4e4e4;padding:13px 14px;border-radius:12px}
+.ai-item-name{font-weight:700;font-size:16px}
+.ai-item-detail{font-size:13px;color:#666;margin-top:4px}
 .raw-toggle{margin-top:12px}
 .raw-wrap{margin-top:10px}
 </style>
@@ -120,10 +124,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.4 Google Cloud Vision</div>
-<h2>🧾 レシートを読む</h2>
+<div class="section-tag">v0.4.1 Google Vision + LLM</div>
+<h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
-Google Cloud Visionでレシートを読み取ります。このテストでは在庫は変更しません。
+Google Cloud Visionで文字を読み、LLMが購入商品・数量・価格を整理します。この段階では在庫は変更しません。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
@@ -133,7 +137,7 @@ Google Cloud Visionでレシートを読み取ります。このテストでは�
 <img id="receiptPreview" class="receipt-preview" alt="レシート画像">
 </div>
 
-<button id="ocrButton" class="primary" onclick="runReceiptOcr()">Google Visionで読み取る</button>
+<button id="ocrButton" class="primary" onclick="runReceiptOcr()">Google Vision + AIで解析</button>
 
 <div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
 <div class="ocr-progress-bar">
@@ -143,11 +147,12 @@ Google Cloud Visionでレシートを読み取ります。このテストでは�
 </div>
 
 <div id="ocrResultArea" class="hidden">
-<p><strong>商品候補</strong></p>
+<p><strong>AIが認識した購入品</strong></p>
+<div id="aiReceiptMeta" class="ai-meta hidden"></div>
 <div id="productCandidates" class="candidate-list"></div>
 
 <div class="raw-toggle">
-<button onclick="toggleRawOcr()">OCR全文を表示 / 非表示</button>
+<button onclick="toggleRawOcr()">Google VisionのOCR全文を表示 / 非表示</button>
 </div>
 <div id="rawOcrWrap" class="raw-wrap hidden">
 <p><strong>Google Vision 認識結果（全文）</strong></p>
@@ -157,7 +162,7 @@ Google Cloud Visionでレシートを読み取ります。このテストでは�
 </div>
 
 <div class="warning-note">
-画像はブラウザ側で縮小してからSupabase Edge Functionへ送り、Google Cloud VisionのDOCUMENT_TEXT_DETECTIONでOCRします。GoogleのAPIキーはブラウザやGitHubには置きません。
+Google Visionは「読む」、LLMは「商品を理解する」担当です。APIキーはどちらもSupabase Edge Function側に置き、GitHubには保存しません。
 </div>
 </div>
 <div class="card">
@@ -472,6 +477,8 @@ function receiptFileChanged() {
   document.getElementById("ocrProgressWrap").classList.add("hidden");
   document.getElementById("ocrResult").value = "";
   document.getElementById("productCandidates").innerHTML = "";
+  document.getElementById("aiReceiptMeta").innerHTML = "";
+  document.getElementById("aiReceiptMeta").classList.add("hidden");
 
   if (receiptPreviewUrl) {
     URL.revokeObjectURL(receiptPreviewUrl);
@@ -531,107 +538,63 @@ async function imageFileToBase64(file) {
   return dataUrl.split(",")[1];
 }
 
-function cleanOcrLine(line) {
-  return line
-    .normalize("NFKC")
-    .replace(/[|¦]/g, " ")
-    .replace(/[‐‑‒–—―]/g, "-")
-    .replace(/^[\s・.。,:;_~^`'"“”‘’=+<>\[\]{}()]+/, "")
-    .replace(/\s+/g, " ")
-    .trim();
+function yen(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return "¥" + n.toLocaleString("ja-JP");
 }
 
-function extractProductCandidates(text) {
-  const rawLines = String(text || "")
-    .split(/\r?\n/)
-    .map(cleanOcrLine)
-    .filter(Boolean);
-
-  const stopWords = ["小計", "合計", "楽天ペイ", "現金", "クレジット", "お釣", "決済", "消費税", "税合計"];
-  const rejectWords = [
-    "領収", "返品", "交換", "登録番号", "TEL", "ホームセンター", "印刷面", "軽減税率",
-    "お買上点数", "コード決済", "決済ブランド", "決済金額", "オーダ", "明細ID", "レシートNo", "店No"
-  ];
-
-  let start = 0;
-  const dateIndex = rawLines.findIndex(l => /20\d{2}.*\d{1,2}.*\d{1,2}/.test(l));
-  if (dateIndex >= 0) start = dateIndex;
-
-  let end = rawLines.length;
-  for (let i = start; i < rawLines.length; i++) {
-    if (stopWords.some(w => rawLines[i].includes(w))) {
-      end = i;
-      break;
-    }
-  }
-
-  const segment = rawLines.slice(start, end);
-  const candidates = [];
-
-  for (let i = 0; i < segment.length; i++) {
-    const line = segment[i];
-    if (rejectWords.some(w => line.includes(w))) continue;
-    if (/^[¥￥\\]?\s*\d+[,.]?\d*\s*$/.test(line)) continue;
-    if (/^[*＊#=\-\s]+$/.test(line)) continue;
-
-    const hasJapanese = /[ぁ-んァ-ヶ一-龠々ー]/.test(line);
-    const hasLatinWord = /[A-Za-z]{3,}/.test(line);
-    const productMark = /^[※*＊]/.test(line) || /[※＊]/.test(line);
-    const looksCount = /\d+\s*コ\s*[x×X]\s*単?\s*\d+/i.test(line);
-    const hasPrice = /[¥￥\\]\s*\d+|\d{2,5}\s*円/.test(line);
-
-    if (looksCount && candidates.length) {
-      candidates[candidates.length - 1].detail = line;
-      continue;
-    }
-
-    if (!(productMark || hasJapanese || hasLatinWord)) continue;
-    if (line.length < 3) continue;
-
-    let display = line
-      .replace(/^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+/, "")
-      .replace(/[¥￥\\]\s*\d+.*$/, "")
-      .replace(/\s+\d{2,5}\s*$/, "")
-      .trim();
-
-    if (display.length < 2) display = line;
-
-    let score = 0;
-    if (productMark) score += 3;
-    if (hasJapanese) score += 2;
-    if (hasLatinWord) score += 1;
-    if (hasPrice) score += 1;
-
-    candidates.push({ display, raw: line, detail: "", score });
-  }
-
-  const seen = new Set();
-  return candidates
-    .filter(c => {
-      const key = c.display.replace(/\s/g, "").toLowerCase();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 12);
-}
-
-function renderProductCandidates(candidates) {
+function renderAiReceipt(receipt) {
   const box = document.getElementById("productCandidates");
+  const meta = document.getElementById("aiReceiptMeta");
   box.innerHTML = "";
+  meta.innerHTML = "";
+  meta.classList.add("hidden");
 
-  if (!candidates.length) {
-    box.innerHTML = '<div class="candidate">商品候補を抽出できませんでした。OCR全文を確認してください。</div>';
+  if (!receipt || !Array.isArray(receipt.items)) {
+    box.innerHTML = '<div class="candidate">AI解析結果の形式が正しくありません。</div>';
     return;
   }
 
-  candidates.forEach(c => {
+  const metaParts = [];
+  if (receipt.store_name) metaParts.push("店舗: " + escapeHtml(String(receipt.store_name)));
+  if (receipt.purchase_date) metaParts.push("購入日: " + escapeHtml(String(receipt.purchase_date)));
+  if (metaParts.length) {
+    meta.innerHTML = metaParts.join("<br>");
+    meta.classList.remove("hidden");
+  }
+
+  if (!receipt.items.length) {
+    box.innerHTML = '<div class="candidate">購入商品を特定できませんでした。OCR全文を確認してください。</div>';
+    return;
+  }
+
+  receipt.items.forEach(item => {
     const div = document.createElement("div");
-    div.className = "candidate";
-    div.innerHTML = `<strong>${escapeHtml(c.display)}</strong>` +
-      (c.detail ? `<small>${escapeHtml(c.detail)}</small>` : "") +
-      `<small>元OCR: ${escapeHtml(c.raw)}</small>`;
+    div.className = "ai-item";
+
+    const name = String(item.normalized_name || item.receipt_name || "商品名不明");
+    const receiptName = String(item.receipt_name || "");
+    const quantity = Math.max(1, Number(item.quantity) || 1);
+    const unit = yen(item.unit_price_yen);
+    const total = yen(item.line_total_yen);
+
+    const detailParts = [quantity + "個"];
+    if (unit) detailParts.push("単価 " + unit);
+    if (total) detailParts.push("計 " + total);
+
+    let original = "";
+    if (receiptName && receiptName !== name) {
+      original = `<div class="ai-item-detail">レシート表記: ${escapeHtml(receiptName)}</div>`;
+    }
+
+    div.innerHTML = `
+      <div class="ai-item-name">${escapeHtml(name)}</div>
+      <div class="ai-item-detail">${detailParts.join(" / ")}</div>
+      ${original}
+    `;
+
     box.appendChild(div);
   });
 }
@@ -654,68 +617,114 @@ async function runReceiptOcr() {
   }
 
   button.disabled = true;
-  button.textContent = "Google Visionで読み取り中…";
+  button.textContent = "解析中…";
   resultArea.classList.add("hidden");
+  document.getElementById("productCandidates").innerHTML = "";
+  document.getElementById("aiReceiptMeta").innerHTML = "";
+  document.getElementById("aiReceiptMeta").classList.add("hidden");
   progressWrap.classList.remove("hidden");
-  fill.style.width = "12%";
+  fill.style.width = "10%";
   status.textContent = "画像を準備しています…";
-  message("Google Cloud Visionへレシートを送っています…");
+  message("レシートを解析しています…");
+
+  let ocrText = "";
 
   try {
+    // 1. Google Vision OCR
     const imageBase64 = await imageFileToBase64(input.files[0]);
 
-    fill.style.width = "45%";
-    status.textContent = "Google Cloud VisionでOCR中…";
+    fill.style.width = "35%";
+    status.textContent = "Google Visionが文字を読み取っています…";
 
-    const { data, error } = await db.functions.invoke("receipt-ocr", {
+    const { data: ocrData, error: ocrError } = await db.functions.invoke("receipt-ocr", {
       body: { imageBase64 }
     });
 
-    if (error) {
-      console.error("Edge Function error:", error);
-      let detail = error.message || "Edge Functionの呼び出しに失敗しました";
+    if (ocrError) {
+      console.error("receipt-ocr error:", ocrError);
+      let detail = ocrError.message || "receipt-ocrの呼び出しに失敗しました";
       try {
-        if (error.context) {
-          const body = await error.context.json();
+        if (ocrError.context) {
+          const body = await ocrError.context.json();
           detail = body?.details?.error?.message || body?.error || detail;
         }
       } catch (_) {}
-      throw new Error(detail);
+      throw new Error("OCR: " + detail);
     }
 
-    if (data?.error) {
-      const detail = data?.details?.error?.message || data.error;
-      throw new Error(detail);
+    if (ocrData?.error) {
+      const detail = ocrData?.details?.error?.message || ocrData.error;
+      throw new Error("OCR: " + detail);
     }
 
-    const text = String(data?.text || "").trim();
-    if (!text) {
-      throw new Error("OCR結果が空でした");
+    ocrText = String(ocrData?.text || "").trim();
+    if (!ocrText) throw new Error("OCR結果が空でした");
+
+    // OCR全文はAI解析に失敗しても確認できるよう先に保持
+    resultBox.value = ocrText;
+
+    // 2. LLM商品解析
+    fill.style.width = "68%";
+    status.textContent = "AIが購入商品を整理しています…";
+
+    const { data: analyzeData, error: analyzeError } = await db.functions.invoke("receipt-analyze", {
+      body: { ocrText }
+    });
+
+    if (analyzeError) {
+      console.error("receipt-analyze error:", analyzeError);
+      let detail = analyzeError.message || "receipt-analyzeの呼び出しに失敗しました";
+      try {
+        if (analyzeError.context) {
+          const body = await analyzeError.context.json();
+          detail = body?.details?.error?.message || body?.error || detail;
+        }
+      } catch (_) {}
+      throw new Error("AI解析: " + detail);
     }
 
-    fill.style.width = "100%";
-    status.textContent = "完了 100%";
+    if (analyzeData?.error) {
+      const detail = analyzeData?.details?.error?.message || analyzeData.error;
+      throw new Error("AI解析: " + detail);
+    }
 
-    resultBox.value = text;
-    renderProductCandidates(extractProductCandidates(text));
+    const receipt = analyzeData?.receipt;
+    if (!receipt) throw new Error("AIの商品解析結果が空でした");
+
+    renderAiReceipt(receipt);
     document.getElementById("rawOcrWrap").classList.add("hidden");
     resultArea.classList.remove("hidden");
 
-    message("✓ Google Cloud Vision OCRが完了しました。在庫データは変更していません。", "success");
+    fill.style.width = "100%";
+    status.textContent = "完了 100%";
+    message("✓ OCR + AI商品解析が完了しました。在庫データはまだ変更していません。", "success");
+
   } catch (err) {
     console.error(err);
     fill.style.width = "100%";
-    status.textContent = "OCRエラー";
-    message("OCRに失敗しました: " + (err.message || String(err)), "error");
+    status.textContent = "解析エラー";
+
+    // Visionまでは成功していた場合、OCR全文だけでも見られるようにする
+    if (ocrText) {
+      resultBox.value = ocrText;
+      document.getElementById("rawOcrWrap").classList.remove("hidden");
+      resultArea.classList.remove("hidden");
+      document.getElementById("productCandidates").innerHTML =
+        '<div class="candidate">AI商品解析でエラーが発生しました。下のOCR全文は取得できています。</div>';
+    }
+
+    message("解析に失敗しました: " + (err.message || String(err)), "error");
   } finally {
     button.disabled = false;
-    button.textContent = "Google Visionで読み取る";
+    button.textContent = "Google Vision + AIで解析";
   }
 }
 
 function clearReceiptOcr() {
   document.getElementById("ocrResult").value = "";
   document.getElementById("productCandidates").innerHTML = "";
+  document.getElementById("aiReceiptMeta").innerHTML = "";
+  document.getElementById("aiReceiptMeta").classList.add("hidden");
   document.getElementById("rawOcrWrap").classList.add("hidden");
   document.getElementById("ocrResultArea").classList.add("hidden");
   document.getElementById("ocrProgressWrap").classList.add("hidden");
