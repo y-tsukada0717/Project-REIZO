@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.7.1</title>
+<title>REIZO v0.8</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -160,10 +160,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.7.1 レシート学習 + 重複検知</div>
+<div class="section-tag">v0.8 REIZO記憶優先 + AI補助</div>
 <h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
-Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。同じレシートの撮り直しは、店舗・日時・取引番号などから重複を検知します。
+Google Cloud Visionで文字を読み、REIZOが覚えているレシート表記を先に照合します。既知の商品だけで確定できるときはLLMを呼ばず、未知・曖昧なときだけAIに助けてもらいます。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
@@ -173,7 +173,7 @@ Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJAN�
 <img id="receiptPreview" class="receipt-preview" alt="レシート画像">
 </div>
 
-<button id="ocrButton" class="primary" onclick="runReceiptOcr()">Google Vision + AIで解析</button>
+<button id="ocrButton" class="primary" onclick="runReceiptOcr()">レシートを解析</button>
 
 <div id="receiptScannerArea" class="receipt-link-panel hidden">
 <div class="process-title">未知商品のJANをスキャン</div>
@@ -203,7 +203,7 @@ Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJAN�
 </div>
 
 <div id="ocrResultArea" class="hidden">
-<p><strong>AIが認識した購入品</strong></p>
+<p><strong>認識した購入品</strong></p>
 <div id="aiReceiptMeta" class="ai-meta hidden"></div>
 <div id="productCandidates" class="candidate-list"></div>
 <div id="receiptLearningSummary" class="receipt-summary"></div>
@@ -220,7 +220,7 @@ Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJAN�
 </div>
 
 <div class="warning-note">
-一度確定した「店舗 + レシート表記 + 商品」の対応はSupabaseに保存します。v0.7.1では、同じレシートを別の写真で読み直しても購入履歴が二重になりにくいよう、安定したレシート情報で重複判定します。
+一度確定した「店舗 + レシート表記 + 商品」の対応はREIZOの記憶としてSupabaseに残ります。v0.8ではその記憶を最優先し、十分な確信があるレシートはLLMなしで処理します。重複検知はv0.7.1の仕組みを維持します。
 </div>
 </div>
 <div class="card">
@@ -269,6 +269,7 @@ let receiptMatches = [];
 let pendingReceiptLink = null;
 let currentReceiptFingerprint = null;
 let currentOcrText = "";
+let currentReceiptAnalysisMode = null;
 let currentItems = [];
 let currentProducts = [];
 let currentProductMap = new Map();
@@ -590,6 +591,7 @@ function receiptFileChanged() {
   pendingReceiptLink = null;
   currentReceiptFingerprint = null;
   currentOcrText = "";
+  currentReceiptAnalysisMode = null;
 
   if (receiptPreviewUrl) {
     URL.revokeObjectURL(receiptPreviewUrl);
@@ -1116,6 +1118,219 @@ function normalizeReceiptKey(value) {
     .replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
+
+/* =========================================
+   v0.8 REIZO記憶優先のレシート解決
+   ========================================= */
+
+function receiptLines(text) {
+  return String(text || "")
+    .normalize("NFKC")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+function isReceiptMetadataLine(line) {
+  const value = String(line || "").normalize("NFKC").trim();
+  if (!value) return true;
+
+  // 日付・時刻、レジ情報、支払・税・注意書きなど。
+  const noise = [
+    /20\d{2}\s*[年\/\-.]\s*\d{1,2}/,
+    /\d{1,2}\s*[:：]\s*\d{2}/,
+    /(?:レジ|No\.?|番号|取引|伝票|担当|領収|登録番号|TEL|電話|住所|営業時間)/i,
+    /(?:小計|合計|税|消費税|内税|外税|軽減税率|お釣り|支払|決済|楽天ペイ|クレジット|現金|ポイント)/i,
+    /(?:返品|交換|保管|お買上|ご購入|お客様|ありがとう|またのご来店)/i,
+    /(?:オーダ|端末|承認|ブランド|コード決済)/i,
+    /^\s*[¥￥\\]?\s*[\d,]+\s*円?\s*$/,
+    /^\s*\d+\s*(?:コ|個|点)\s*[x×X]\s*(?:単|@)?\s*\d+/i,
+    /^\s*[\d\s:：\/\-.()]+\s*$/
+  ];
+
+  return noise.some(re => re.test(value));
+}
+
+function findReceiptProductWindow(text) {
+  const lines = receiptLines(text);
+  if (!lines.length) return [];
+
+  let start = 0;
+  const dateIndex = lines.findIndex(line =>
+    /20\d{2}\s*(?:年|[\/\-.])\s*\d{1,2}/.test(line)
+  );
+  if (dateIndex >= 0) start = dateIndex + 1;
+
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) {
+    if (/(?:^|\s)小計(?:\s|$)/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+
+  // OCRが「小計」を落としても、商品欄から極端に遠くまで見ない。
+  end = Math.min(end, start + 35);
+  return lines.slice(start, end);
+}
+
+function aliasMatchesLine(aliasKey, lineKey) {
+  if (!aliasKey || !lineKey) return false;
+  if (aliasKey === lineKey) return true;
+
+  // 短すぎるキーの部分一致は誤認しやすいので、4文字以上のみ許可。
+  if (aliasKey.length >= 4 && lineKey.includes(aliasKey)) return true;
+  if (lineKey.length >= 4 && aliasKey.includes(lineKey)) return true;
+  return false;
+}
+
+async function loadReceiptMemory() {
+  const { data: aliases, error: aliasError } = await db
+    .from("receipt_aliases")
+    .select("id,product_id,store_name,store_key,receipt_name,receipt_key")
+    .eq("household_id", currentHousehold.id);
+
+  if (aliasError) throw aliasError;
+  if (!aliases?.length) return [];
+
+  const ids = [...new Set(aliases.map(x => x.product_id).filter(Boolean))];
+  const { data: products, error: productError } = await db
+    .from("products")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .in("id", ids);
+
+  if (productError) throw productError;
+
+  const productMap = new Map((products || []).map(p => [p.id, p]));
+  return aliases
+    .map(alias => ({ ...alias, product: productMap.get(alias.product_id) || null }))
+    .filter(alias => alias.product);
+}
+
+async function tryResolveReceiptFromMemory(ocrText) {
+  const memory = await loadReceiptMemory();
+  if (!memory.length) {
+    return { resolved: false, reason: "no_memory" };
+  }
+
+  const fullKey = normalizeReceiptKey(ocrText);
+  const windowLines = findReceiptProductWindow(ocrText);
+  const windowKeys = windowLines.map(line => ({
+    line,
+    key: normalizeReceiptKey(line)
+  }));
+
+  // 同じreceipt_keyが複数の商品を指す場合、店舗が特定できなければAIへ回す。
+  const productIdsByReceiptKey = new Map();
+  for (const alias of memory) {
+    if (!productIdsByReceiptKey.has(alias.receipt_key)) {
+      productIdsByReceiptKey.set(alias.receipt_key, new Set());
+    }
+    productIdsByReceiptKey.get(alias.receipt_key).add(alias.product_id);
+  }
+
+  const matches = [];
+  const matchedProducts = new Set();
+
+  for (const alias of memory) {
+    const receiptKey = String(alias.receipt_key || "");
+    if (!receiptKey) continue;
+
+    const lineMatch = windowKeys.find(x => aliasMatchesLine(receiptKey, x.key));
+    if (!lineMatch && !(receiptKey.length >= 4 && fullKey.includes(receiptKey))) continue;
+
+    const storeKey = String(alias.store_key || "");
+    const storeMatched = !storeKey || (storeKey.length >= 4 && fullKey.includes(storeKey));
+    const uniqueProductForKey = (productIdsByReceiptKey.get(receiptKey)?.size || 0) === 1;
+
+    // 店舗が読めた、またはこのレシート表記が家のDB内で一意なら採用。
+    if (!storeMatched && !uniqueProductForKey) continue;
+    if (matchedProducts.has(alias.product_id)) continue;
+
+    matchedProducts.add(alias.product_id);
+    matches.push({ alias, product: alias.product, matchedLine: lineMatch?.line || alias.receipt_name });
+  }
+
+  if (!matches.length) {
+    return { resolved: false, reason: "no_alias_match" };
+  }
+
+  // 商品欄の「商品名らしいのに既知aliasで説明できない行」を探す。
+  const suspiciousLines = [];
+  for (const row of windowKeys) {
+    if (!row.key || isReceiptMetadataLine(row.line)) continue;
+
+    const covered = matches.some(match =>
+      aliasMatchesLine(String(match.alias.receipt_key || ""), row.key)
+    );
+
+    if (covered) continue;
+
+    // 「※」付き、価格を伴う文字列、ある程度の日本語/英字を持つ行は未知商品の可能性。
+    const looksProductLike =
+      /[※＊*]/.test(row.line) ||
+      /[¥￥\\]\s*\d/.test(row.line) ||
+      ((row.line.match(/[\p{L}]/gu) || []).length >= 4);
+
+    if (looksProductLike) suspiciousLines.push(row.line);
+  }
+
+  // 保守的に運用する。怪しい行が1つでもあればAIへフォールバック。
+  if (suspiciousLines.length) {
+    return {
+      resolved: false,
+      reason: "possible_unknown_items",
+      knownMatches: matches,
+      suspiciousLines
+    };
+  }
+
+  // 店舗は、OCR中で店舗名まで一致したaliasを優先。
+  const storeMatchedAlias = matches.find(match => {
+    const key = String(match.alias.store_key || "");
+    return key && key.length >= 4 && fullKey.includes(key);
+  });
+  const storeName = storeMatchedAlias?.alias.store_name || matches[0].alias.store_name || "";
+  const dateTime = extractReceiptDateTime(ocrText);
+
+  const receipt = {
+    store_name: storeName || null,
+    purchase_date: dateTime.date || null,
+    items: matches.map(match => ({
+      receipt_name: match.alias.receipt_name,
+      normalized_name: match.product.name,
+      quantity: 1,
+      unit_price_yen: null,
+      line_total_yen: null
+    }))
+  };
+
+  return {
+    resolved: true,
+    receipt,
+    matches: matches.map(match => ({
+      item: {
+        receipt_name: match.alias.receipt_name,
+        normalized_name: match.product.name,
+        quantity: 1,
+        unit_price_yen: null,
+        line_total_yen: null
+      },
+      state: "known",
+      product: match.product,
+      alias: match.alias
+    }))
+  };
+}
+
+function prepareReceiptLearningFromMemory(memoryResult) {
+  analyzedReceipt = memoryResult.receipt;
+  receiptMatches = memoryResult.matches || [];
+  currentReceiptAnalysisMode = "memory";
+  renderReceiptLearning();
+}
+
 async function findAliasForItem(receipt, item) {
   const storeName = String(receipt.store_name || "").trim();
   const receiptName = String(item.receipt_name || item.normalized_name || "").trim();
@@ -1188,6 +1403,11 @@ function renderReceiptLearning() {
   const metaParts = [];
   if (analyzedReceipt.store_name) metaParts.push("店舗: " + escapeHtml(String(analyzedReceipt.store_name)));
   if (analyzedReceipt.purchase_date) metaParts.push("購入日: " + escapeHtml(String(analyzedReceipt.purchase_date)));
+  if (currentReceiptAnalysisMode === "memory") {
+    metaParts.push("処理: REIZO記憶のみ（LLM未使用）");
+  } else if (currentReceiptAnalysisMode === "ai") {
+    metaParts.push("処理: REIZO記憶で未確定 → AI補助");
+  }
   if (metaParts.length) {
     meta.innerHTML = metaParts.join("<br>");
     meta.classList.remove("hidden");
@@ -1518,6 +1738,7 @@ async function runReceiptOcr() {
   pendingReceiptLink = null;
   currentReceiptFingerprint = null;
   currentOcrText = "";
+  currentReceiptAnalysisMode = null;
   progressWrap.classList.remove("hidden");
   fill.style.width = "10%";
   status.textContent = "画像を準備しています…";
@@ -1562,41 +1783,63 @@ async function runReceiptOcr() {
     // OCR全文はAI解析に失敗しても確認できるよう先に保持
     resultBox.value = ocrText;
 
-    // 2. LLM商品解析
-    fill.style.width = "68%";
-    status.textContent = "AIが購入商品を整理しています…";
+    // 2. まずREIZO自身の記憶で解決を試す
+    fill.style.width = "58%";
+    status.textContent = "REIZOの記憶と照合しています…";
 
-    const { data: analyzeData, error: analyzeError } = await db.functions.invoke("receipt-analyze", {
-      body: { ocrText }
-    });
+    const memoryResult = await tryResolveReceiptFromMemory(ocrText);
 
-    if (analyzeError) {
-      console.error("receipt-analyze error:", analyzeError);
-      let detail = analyzeError.message || "receipt-analyzeの呼び出しに失敗しました";
-      try {
-        if (analyzeError.context) {
-          const body = await analyzeError.context.json();
-          detail = body?.details?.error?.message || body?.error || detail;
-        }
-      } catch (_) {}
-      throw new Error("AI解析: " + detail);
+    if (memoryResult.resolved) {
+      prepareReceiptLearningFromMemory(memoryResult);
+      document.getElementById("rawOcrWrap").classList.add("hidden");
+      resultArea.classList.remove("hidden");
+
+      fill.style.width = "100%";
+      status.textContent = "完了 100%";
+      message(
+        `✓ REIZOの記憶だけで${memoryResult.matches.length}商品を認識しました。LLMは呼び出していません。`,
+        "success"
+      );
+    } else {
+      // 3. 未知・曖昧な部分があるときだけLLMへフォールバック
+      currentReceiptAnalysisMode = "ai";
+      fill.style.width = "72%";
+      status.textContent = "未知・曖昧な商品があるためAIに確認しています…";
+
+      console.log("REIZO memory fast-path fallback:", memoryResult);
+
+      const { data: analyzeData, error: analyzeError } = await db.functions.invoke("receipt-analyze", {
+        body: { ocrText }
+      });
+
+      if (analyzeError) {
+        console.error("receipt-analyze error:", analyzeError);
+        let detail = analyzeError.message || "receipt-analyzeの呼び出しに失敗しました";
+        try {
+          if (analyzeError.context) {
+            const body = await analyzeError.context.json();
+            detail = body?.details?.error?.message || body?.error || detail;
+          }
+        } catch (_) {}
+        throw new Error("AI解析: " + detail);
+      }
+
+      if (analyzeData?.error) {
+        const detail = analyzeData?.details?.error?.message || analyzeData.error;
+        throw new Error("AI解析: " + detail);
+      }
+
+      const receipt = analyzeData?.receipt;
+      if (!receipt) throw new Error("AIの商品解析結果が空でした");
+
+      await prepareReceiptLearning(receipt);
+      document.getElementById("rawOcrWrap").classList.add("hidden");
+      resultArea.classList.remove("hidden");
+
+      fill.style.width = "100%";
+      status.textContent = "完了 100%";
+      message("✓ REIZOの記憶だけでは未確定だったため、AIで商品を整理しました。", "success");
     }
-
-    if (analyzeData?.error) {
-      const detail = analyzeData?.details?.error?.message || analyzeData.error;
-      throw new Error("AI解析: " + detail);
-    }
-
-    const receipt = analyzeData?.receipt;
-    if (!receipt) throw new Error("AIの商品解析結果が空でした");
-
-    await prepareReceiptLearning(receipt);
-    document.getElementById("rawOcrWrap").classList.add("hidden");
-    resultArea.classList.remove("hidden");
-
-    fill.style.width = "100%";
-    status.textContent = "完了 100%";
-    message("✓ OCR + AI解析が完了しました。未知商品だけ一度JANを教えてください。", "success");
 
   } catch (err) {
     console.error(err);
@@ -1609,13 +1852,13 @@ async function runReceiptOcr() {
       document.getElementById("rawOcrWrap").classList.remove("hidden");
       resultArea.classList.remove("hidden");
       document.getElementById("productCandidates").innerHTML =
-        '<div class="candidate">AI商品解析でエラーが発生しました。下のOCR全文は取得できています。</div>';
+        '<div class="candidate">商品解析でエラーが発生しました。下のOCR全文は取得できています。</div>';
     }
 
     message("解析に失敗しました: " + (err.message || String(err)), "error");
   } finally {
     button.disabled = false;
-    button.textContent = "Google Vision + AIで解析";
+    button.textContent = "レシートを解析";
   }
 }
 
@@ -1626,6 +1869,7 @@ async function clearReceiptOcr() {
   pendingReceiptLink = null;
   currentReceiptFingerprint = null;
   currentOcrText = "";
+  currentReceiptAnalysisMode = null;
   document.getElementById("receiptLinkForm").classList.add("hidden");
   document.getElementById("receiptLearningSummary").textContent = "";
   document.getElementById("bulkStockButton").classList.add("hidden");
