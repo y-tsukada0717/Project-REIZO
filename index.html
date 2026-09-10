@@ -45,6 +45,14 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .section-tag{font-size:12px;color:#666;font-weight:600}
 .warning-note{font-size:13px;background:#fff8e6;padding:10px;border-radius:8px;margin-top:10px}
 .process-title{font-size:13px;font-weight:700;margin-top:14px}
+.crop-control{margin-top:12px}
+.crop-control label{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:#555}
+.crop-control input{margin-top:6px}
+.candidate-list{display:grid;gap:8px;margin-top:10px}
+.candidate{background:#f7f7f7;padding:11px 12px;border-radius:10px;font-size:15px;line-height:1.35}
+.candidate small{display:block;color:#777;margin-top:3px}
+.raw-toggle{margin-top:12px}
+.raw-wrap{margin-top:10px}
 </style>
 </head>
 
@@ -113,13 +121,22 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.3.1 OCR前処理テスト</div>
+<div class="section-tag">v0.3.2 OCR改善テスト</div>
 <h2>🧾 レシートを読む</h2>
 <p class="receipt-help">
 レシートをなるべく画面中央・縦向き・真上から撮ってください。今回は在庫を変更しません。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
+
+<div class="crop-control">
+<label for="cropWidth">
+  <span>レシートの横幅</span>
+  <strong id="cropWidthValue">46%</strong>
+</label>
+<input id="cropWidth" type="range" min="32" max="70" value="46" step="1" oninput="cropWidthChanged()">
+<p class="receipt-help">加工画像に机や周囲の物が残るなら狭く、レシートの端が切れるなら広くします。</p>
+</div>
 
 <div id="originalPreviewArea" class="hidden">
 <div class="process-title">元画像</div>
@@ -143,13 +160,21 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div id="ocrResultArea" class="hidden">
-<p><strong>OCR認識結果</strong></p>
+<p><strong>商品候補</strong></p>
+<div id="productCandidates" class="candidate-list"></div>
+
+<div class="raw-toggle">
+<button onclick="toggleRawOcr()">OCR全文を表示 / 非表示</button>
+</div>
+<div id="rawOcrWrap" class="raw-wrap hidden">
+<p><strong>OCR認識結果（全文）</strong></p>
 <textarea id="ocrResult" class="ocr-result" readonly></textarea>
+</div>
 <button onclick="clearReceiptOcr()">結果をクリア</button>
 </div>
 
 <div class="warning-note">
-この版では中央付近の文字領域を自動検出して切り抜き、拡大・グレースケール化・局所二値化してからOCRします。切り抜きがズレたら、レシートを中央に置いて撮り直してください。
+この版ではレシートを中央基準で厳密に切り抜き、文字を潰しにくいグレースケール補正でOCRします。さらにOCR全文から「商品候補」だけを抽出します。在庫はまだ変更しません。
 </div>
 </div>
 
@@ -456,7 +481,7 @@ async function putProductInStock(product) {
 }
 
 /* =========================================
-   v0.3.1 レシート前処理 + OCR
+   v0.3.2 レシート前処理 + 商品候補抽出
    ========================================= */
 
 function receiptFileChanged() {
@@ -502,166 +527,101 @@ async function loadImageFromFile(file) {
   });
 }
 
+function cropWidthChanged() {
+  const slider = document.getElementById("cropWidth");
+  document.getElementById("cropWidthValue").textContent = slider.value + "%";
+  processedReady = false;
+  document.getElementById("processedPreviewArea").classList.add("hidden");
+  document.getElementById("ocrResultArea").classList.add("hidden");
+  message("横幅を変更しました。もう一度『① 画像を加工する』を押してください。");
+}
+
 function detectReceiptBounds(img) {
-  const maxAnalysisWidth = 700;
+  // v0.3.2: 家庭での撮影は「レシートを画面中央に置く」運用に寄せる。
+  // 背景の物体を文字領域として誤検出するより、中央の幅を明示した方が安定する。
+  const widthPercent = Number(document.getElementById("cropWidth")?.value || 46) / 100;
+  const cropWidth = Math.max(1, Math.round(img.naturalWidth * widthPercent));
+  const x = Math.max(0, Math.round((img.naturalWidth - cropWidth) / 2));
+
+  // 縦方向だけは、中央領域の暗い画素から上下端を推定する。
+  const maxAnalysisWidth = 650;
   const scale = Math.min(1, maxAnalysisWidth / img.naturalWidth);
   const w = Math.max(1, Math.round(img.naturalWidth * scale));
   const h = Math.max(1, Math.round(img.naturalHeight * scale));
-
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0, w, h);
-
   const data = ctx.getImageData(0, 0, w, h).data;
 
-  // レシートは中央に置く前提。外側の黒い机上物体を除外する。
-  const searchLeft = Math.floor(w * 0.16);
-  const searchRight = Math.ceil(w * 0.84);
-
-  const colScores = new Float32Array(w);
-  const darkThreshold = 175;
-
-  for (let x = searchLeft; x < searchRight; x++) {
-    let dark = 0;
-    for (let y = 0; y < h; y += 2) {
-      const i = (y * w + x) * 4;
-      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      if (gray < darkThreshold) dark++;
-    }
-    colScores[x] = dark;
-  }
-
-  // 横方向に平滑化して「文字が縦に存在する領域」を拾う。
-  const smooth = new Float32Array(w);
-  const radius = Math.max(3, Math.round(w * 0.01));
-  let rolling = 0;
-  for (let x = searchLeft; x < searchRight; x++) {
-    rolling += colScores[x];
-    if (x - radius >= searchLeft) rolling -= colScores[x - radius];
-    const count = Math.min(radius, x - searchLeft + 1);
-    smooth[x] = rolling / count;
-  }
-
-  const center = Math.floor(w / 2);
-  const minScore = Math.max(2, h * 0.006);
-  let left = center;
-  let right = center;
-
-  while (left > searchLeft && smooth[left] > minScore) left--;
-  while (right < searchRight - 1 && smooth[right] > minScore) right++;
-
-  // 中央が白抜けだった場合のフォールバック：閾値以上の最小/最大列。
-  if (right - left < w * 0.15) {
-    left = searchRight;
-    right = searchLeft;
-    for (let x = searchLeft; x < searchRight; x++) {
-      if (smooth[x] > minScore) {
-        left = Math.min(left, x);
-        right = Math.max(right, x);
-      }
-    }
-  }
-
-  // まだおかしければ中央55%を使う。
-  if (right <= left || right - left < w * 0.18 || right - left > w * 0.68) {
-    left = Math.floor(w * 0.23);
-    right = Math.ceil(w * 0.77);
-  }
-
-  const xMargin = Math.round((right - left) * 0.10);
-  left = Math.max(0, left - xMargin);
-  right = Math.min(w, right + xMargin);
-
-  // 選んだ横幅内で文字がある最上部・最下部を探す。
-  let top = h;
-  let bottom = 0;
-  const rowMinDark = Math.max(2, Math.round((right - left) * 0.015));
+  const left = Math.max(0, Math.round(x * scale));
+  const right = Math.min(w, Math.round((x + cropWidth) * scale));
+  const rowScores = new Float32Array(h);
+  const darkThreshold = 190;
 
   for (let y = 0; y < h; y++) {
     let dark = 0;
-    for (let x = left; x < right; x += 2) {
-      const i = (y * w + x) * 4;
-      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      if (gray < darkThreshold) dark++;
+    for (let xx = left; xx < right; xx += 2) {
+      const i = (y * w + xx) * 4;
+      const g = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (g < darkThreshold) dark++;
     }
-    if (dark >= rowMinDark) {
+    rowScores[y] = dark;
+  }
+
+  // 行スコアを平滑化し、レシート文字が続く縦範囲を拾う。
+  const radius = Math.max(3, Math.round(h * 0.006));
+  const smooth = new Float32Array(h);
+  for (let y = 0; y < h; y++) {
+    let sum = 0, count = 0;
+    for (let yy = Math.max(0, y - radius); yy <= Math.min(h - 1, y + radius); yy++) {
+      sum += rowScores[yy];
+      count++;
+    }
+    smooth[y] = sum / count;
+  }
+
+  const threshold = Math.max(1.5, (right - left) * 0.004);
+  let top = h, bottom = -1;
+  for (let y = 0; y < h; y++) {
+    if (smooth[y] > threshold) {
       top = Math.min(top, y);
       bottom = Math.max(bottom, y);
     }
   }
 
-  if (bottom <= top || bottom - top < h * 0.35) {
-    top = 0;
-    bottom = h - 1;
+  if (bottom <= top || bottom - top < h * 0.30) {
+    top = Math.round(h * 0.02);
+    bottom = Math.round(h * 0.98);
   }
 
-  const yMargin = Math.round((bottom - top) * 0.035);
-  top = Math.max(0, top - yMargin);
-  bottom = Math.min(h - 1, bottom + yMargin);
+  const margin = Math.round((bottom - top) * 0.025);
+  top = Math.max(0, top - margin);
+  bottom = Math.min(h - 1, bottom + margin);
 
   return {
-    x: Math.round(left / scale),
+    x,
     y: Math.round(top / scale),
-    width: Math.round((right - left) / scale),
-    height: Math.round((bottom - top + 1) / scale)
+    width: cropWidth,
+    height: Math.max(1, Math.round((bottom - top + 1) / scale))
   };
 }
 
-function adaptiveBinarize(canvas) {
+function enhanceGrayscale(canvas) {
+  // Tesseract自身にも二値化処理があるため、ここでは文字を潰しやすい強い二値化を避ける。
+  // 背景を白く寄せつつ、文字側だけコントラストを軽く上げる。
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const w = canvas.width;
-  const h = canvas.height;
-  const img = ctx.getImageData(0, 0, w, h);
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const p = img.data;
 
-  const gray = new Uint8Array(w * h);
-  for (let i = 0, j = 0; i < p.length; i += 4, j++) {
-    // 少しコントラストを強めたグレースケール
+  for (let i = 0; i < p.length; i += 4) {
     let g = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
-    g = Math.max(0, Math.min(255, (g - 128) * 1.35 + 128));
-    gray[j] = g;
-  }
-
-  // 積分画像で局所平均を高速計算
-  const iw = w + 1;
-  const integral = new Uint32Array((w + 1) * (h + 1));
-
-  for (let y = 1; y <= h; y++) {
-    let rowSum = 0;
-    for (let x = 1; x <= w; x++) {
-      rowSum += gray[(y - 1) * w + (x - 1)];
-      integral[y * iw + x] = integral[(y - 1) * iw + x] + rowSum;
-    }
-  }
-
-  const radius = Math.max(12, Math.round(w * 0.018));
-  const offset = 13;
-
-  for (let y = 0; y < h; y++) {
-    const y0 = Math.max(0, y - radius);
-    const y1 = Math.min(h - 1, y + radius);
-
-    for (let x = 0; x < w; x++) {
-      const x0 = Math.max(0, x - radius);
-      const x1 = Math.min(w - 1, x + radius);
-
-      const A = integral[y0 * iw + x0];
-      const B = integral[y0 * iw + (x1 + 1)];
-      const C = integral[(y1 + 1) * iw + x0];
-      const D = integral[(y1 + 1) * iw + (x1 + 1)];
-      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
-      const mean = (D - B - C + A) / area;
-
-      const g = gray[y * w + x];
-      const v = g < (mean - offset) ? 0 : 255;
-      const i = (y * w + x) * 4;
-      p[i] = v;
-      p[i + 1] = v;
-      p[i + 2] = v;
-      p[i + 3] = 255;
-    }
+    g = (g - 128) * 1.22 + 138;
+    if (g > 228) g = 255;
+    g = Math.max(0, Math.min(255, g));
+    p[i] = p[i + 1] = p[i + 2] = g;
+    p[i + 3] = 255;
   }
 
   ctx.putImageData(img, 0, 0);
@@ -676,8 +636,8 @@ async function buildProcessedReceipt() {
   const img = await loadImageFromFile(input.files[0]);
   const bounds = detectReceiptBounds(img);
 
-  // OCRには文字の高さが重要。レシート幅を1000px程度まで拡大。
-  const targetWidth = Math.round(Math.min(1200, Math.max(900, bounds.width * 2.5)));
+  // 横幅1000px前後に揃えて文字を十分大きくする。
+  const targetWidth = Math.round(Math.min(1150, Math.max(950, bounds.width * 2.4)));
   const scale = targetWidth / bounds.width;
   const targetHeight = Math.max(1, Math.round(bounds.height * scale));
 
@@ -692,17 +652,11 @@ async function buildProcessedReceipt() {
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(
     img,
-    bounds.x,
-    bounds.y,
-    bounds.width,
-    bounds.height,
-    0,
-    0,
-    targetWidth,
-    targetHeight
+    bounds.x, bounds.y, bounds.width, bounds.height,
+    0, 0, targetWidth, targetHeight
   );
 
-  adaptiveBinarize(canvas);
+  enhanceGrayscale(canvas);
   processedReady = true;
   document.getElementById("processedPreviewArea").classList.remove("hidden");
   return canvas;
@@ -763,6 +717,119 @@ async function getOcrWorker() {
   return ocrWorker;
 }
 
+
+function cleanOcrLine(line) {
+  return line
+    .normalize("NFKC")
+    .replace(/[|¦]/g, " ")
+    .replace(/[‐‑‒–—―]/g, "-")
+    .replace(/^[\s・.。,:;_~^`'"“”‘’=+<>\[\]{}()]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractProductCandidates(text) {
+  const rawLines = String(text || "")
+    .split(/\r?\n/)
+    .map(cleanOcrLine)
+    .filter(Boolean);
+
+  const stopWords = ["小計", "合計", "楽天ペイ", "現金", "クレジット", "お釣", "決済", "消費税", "外8%", "内8%", "税合計"];
+  const rejectWords = [
+    "領収", "返品", "交換", "登録番号", "TEL", "ホームセンター", "印刷面", "軽減税率",
+    "お買上点数", "コード決済", "決済ブランド", "決済金額", "オーダ", "明細ID", "レシートNo", "店No"
+  ];
+
+  let start = 0;
+  const dateIndex = rawLines.findIndex(l => /20\d{2}.*\d{1,2}.*\d{1,2}/.test(l));
+  if (dateIndex >= 0) start = dateIndex;
+
+  let end = rawLines.length;
+  for (let i = start; i < rawLines.length; i++) {
+    if (stopWords.some(w => rawLines[i].includes(w))) {
+      end = i;
+      break;
+    }
+  }
+
+  const segment = rawLines.slice(start, end);
+  const candidates = [];
+
+  for (let i = 0; i < segment.length; i++) {
+    let line = segment[i];
+    if (rejectWords.some(w => line.includes(w))) continue;
+    if (/^[¥￥\\]?\s*\d+[,.]?\d*\s*$/.test(line)) continue;
+    if (/^[*＊#=\-\s]+$/.test(line)) continue;
+
+    const hasJapanese = /[ぁ-んァ-ヶ一-龠々ー]/.test(line);
+    const hasLatinWord = /[A-Za-z]{3,}/.test(line);
+    const productMark = /^[※*＊]/.test(line) || /[※＊]/.test(line);
+    const looksCount = /\d+\s*コ\s*[x×X]\s*単?\s*\d+/i.test(line);
+    const hasPrice = /[¥￥\\]\s*\d+|\d{2,5}\s*円/.test(line);
+
+    // 数量行は直前の商品候補に補足として付ける。
+    if (looksCount && candidates.length) {
+      candidates[candidates.length - 1].detail = line;
+      continue;
+    }
+
+    if (!(productMark || hasJapanese || hasLatinWord)) continue;
+    if (line.length < 3) continue;
+
+    // 先頭の記号・価格・OCRゴミを軽く除去。商品名は原文を残しすぎない。
+    let display = line
+      .replace(/^[^ぁ-んァ-ヶ一-龠A-Za-z0-9]+/, "")
+      .replace(/[¥￥\\]\s*\d+.*$/, "")
+      .replace(/\s+\d{2,5}\s*$/, "")
+      .trim();
+
+    if (display.length < 2) display = line;
+
+    let score = 0;
+    if (productMark) score += 3;
+    if (hasJapanese) score += 2;
+    if (hasLatinWord) score += 1;
+    if (hasPrice) score += 1;
+
+    candidates.push({ display, raw: line, detail: "", score });
+  }
+
+  // 同じような行を重複排除し、怪しい低スコア行を後ろへ。
+  const seen = new Set();
+  return candidates
+    .filter(c => {
+      const key = c.display.replace(/\s/g, "").toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+}
+
+function renderProductCandidates(candidates) {
+  const box = document.getElementById("productCandidates");
+  box.innerHTML = "";
+
+  if (!candidates.length) {
+    box.innerHTML = '<div class="candidate">商品候補をうまく抽出できませんでした。OCR全文を確認してください。</div>';
+    return;
+  }
+
+  candidates.forEach(c => {
+    const div = document.createElement("div");
+    div.className = "candidate";
+    div.innerHTML = `<strong>${escapeHtml(c.display)}</strong>` +
+      (c.detail ? `<small>${escapeHtml(c.detail)}</small>` : "") +
+      `<small>元OCR: ${escapeHtml(c.raw)}</small>`;
+    box.appendChild(div);
+  });
+}
+
+function toggleRawOcr() {
+  document.getElementById("rawOcrWrap").classList.toggle("hidden");
+}
+
 async function runReceiptOcr() {
   const input = document.getElementById("receiptFile");
   const button = document.getElementById("ocrButton");
@@ -791,10 +858,12 @@ async function runReceiptOcr() {
     const { data: { text } } = await worker.recognize(canvas);
 
     resultBox.value = (text || "").trim();
+    renderProductCandidates(extractProductCandidates(text));
+    document.getElementById("rawOcrWrap").classList.add("hidden");
     resultArea.classList.remove("hidden");
     fill.style.width = "100%";
     status.textContent = "完了 100%";
-    message("✓ OCRが完了しました。在庫データは変更していません。", "success");
+    message("✓ OCRと商品候補抽出が完了しました。在庫データは変更していません。", "success");
   } catch (err) {
     console.error(err);
     message("OCRに失敗しました。加工画像を確認してからもう一度試してください。", "error");
@@ -807,6 +876,8 @@ async function runReceiptOcr() {
 
 function clearReceiptOcr() {
   document.getElementById("ocrResult").value = "";
+  document.getElementById("productCandidates").innerHTML = "";
+  document.getElementById("rawOcrWrap").classList.add("hidden");
   document.getElementById("ocrResultArea").classList.add("hidden");
   document.getElementById("ocrProgressWrap").classList.add("hidden");
   document.getElementById("ocrProgressFill").style.width = "0%";
