@@ -36,14 +36,15 @@ button{cursor:pointer}
 .badge{display:inline-block;font-size:12px;padding:3px 7px;border-radius:10px;background:#eee;margin-left:5px}
 #reader{width:100%;margin-top:12px;overflow:hidden;border-radius:12px}
 hr{margin:22px 0;border:0;border-top:1px solid #ddd}
-.receipt-preview{display:block;max-width:100%;max-height:420px;margin:12px auto 0;border-radius:10px}
+.receipt-preview,.processed-preview{display:block;max-width:100%;max-height:460px;margin:12px auto 0;border-radius:10px;border:1px solid #ddd}
 .ocr-progress-wrap{margin-top:12px}
 .ocr-progress-bar{height:10px;background:#e5e5e5;border-radius:999px;overflow:hidden}
 .ocr-progress-fill{height:100%;width:0%;background:#555;transition:width .15s}
 .ocr-status{font-size:13px;color:#666;margin-top:6px}
-.ocr-result{min-height:220px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;line-height:1.5}
+.ocr-result{min-height:240px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;line-height:1.5}
 .section-tag{font-size:12px;color:#666;font-weight:600}
 .warning-note{font-size:13px;background:#fff8e6;padding:10px;border-radius:8px;margin-top:10px}
+.process-title{font-size:13px;font-weight:700;margin-top:14px}
 </style>
 </head>
 
@@ -69,9 +70,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 <p>新しく家を作る</p>
 <input id="houseName" placeholder="例：わが家">
 <button onclick="createHousehold()">家を作る</button>
-
 <hr>
-
 <p>招待コードで参加</p>
 <input id="inviteInput" placeholder="招待コード">
 <button onclick="joinHousehold()">参加する</button>
@@ -104,42 +103,37 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 <p>JAN</p>
 <div id="scannedJan" class="jan-number"></div>
 <input id="newProductName" placeholder="商品名 例：明治おいしい牛乳 900ml">
-
 <select id="newProductStorage">
 <option value="fridge">冷蔵</option>
 <option value="freezer">冷凍</option>
 <option value="pantry">常温</option>
 </select>
-
 <button class="primary" onclick="saveNewProduct()">記憶して入庫</button>
 <button onclick="cancelUnknownProduct()">キャンセル</button>
 </div>
 
 <div class="card">
-<div class="section-tag">v0.3 OCRテスト</div>
+<div class="section-tag">v0.3.1 OCR前処理テスト</div>
 <h2>🧾 レシートを読む</h2>
-
 <p class="receipt-help">
-この段階では読み取った文字を表示するだけです。在庫は変更しません。
+レシートをなるべく画面中央・縦向き・真上から撮ってください。今回は在庫を変更しません。
 </p>
 
-<input
-  id="receiptFile"
-  type="file"
-  accept="image/*"
-  capture="environment"
-  onchange="receiptFileChanged()"
->
+<input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
 
-<img
-  id="receiptPreview"
-  class="receipt-preview hidden"
-  alt="レシート画像プレビュー"
->
+<div id="originalPreviewArea" class="hidden">
+<div class="process-title">元画像</div>
+<img id="receiptPreview" class="receipt-preview" alt="レシート元画像">
+</div>
 
-<button id="ocrButton" class="primary" onclick="runReceiptOcr()">
-文字を読み取る
-</button>
+<div id="processedPreviewArea" class="hidden">
+<div class="process-title">OCRに渡す加工後画像</div>
+<canvas id="processedCanvas" class="processed-preview"></canvas>
+<p class="receipt-help">レシートだけが切り抜かれ、黒文字・白背景になっていれば成功です。</p>
+</div>
+
+<button id="preprocessButton" class="primary" onclick="previewPreprocess()">① 画像を加工する</button>
+<button id="ocrButton" class="primary" onclick="runReceiptOcr()">② 加工画像をOCRする</button>
 
 <div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
 <div class="ocr-progress-bar">
@@ -155,20 +149,18 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="warning-note">
-まずは実際のレシートと認識結果を見比べて、商品名・価格・店名がどの程度読めるか確認します。
+この版では中央付近の文字領域を自動検出して切り抜き、拡大・グレースケール化・局所二値化してからOCRします。切り抜きがズレたら、レシートを中央に置いて撮り直してください。
 </div>
 </div>
 
 <div class="card">
 <h2>手動で追加</h2>
 <input id="itemName" placeholder="例：キャベツ">
-
 <select id="storage">
 <option value="fridge">冷蔵</option>
 <option value="freezer">冷凍</option>
 <option value="pantry">常温</option>
 </select>
-
 <button onclick="addItem()">追加</button>
 </div>
 
@@ -182,1382 +174,749 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </main>
 
 <script>
-
 /* =========================================
    ★ここだけ、今使っている自分の値に変更
    ========================================= */
 
-const SUPABASE_URL =
-  "https://faavfjrkdgnufhpqjkks.supabase.co";
-
-const SUPABASE_KEY =
-  "sb_publishable_YNdPWnNeuENGqHlUO1iwCQ_pdbaqpe9";
+const SUPABASE_URL = "https://faavfjrkdgnufhpqjkks.supabase.co";
+const SUPABASE_KEY = "sb_publishable_YNdPWnNeuENGqHlUO1iwCQ_pdbaqpe9";
 
 /* ========================================= */
 
-const db =
-  window.supabase.createClient(
-    SUPABASE_URL,
-    SUPABASE_KEY
-  );
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let currentHousehold = null;
 let realtimeChannel = null;
-
 let html5QrCode = null;
 let scannerRunning = false;
 let scanLock = false;
 let pendingJan = null;
-
 let ocrWorker = null;
 let receiptPreviewUrl = null;
-
-
-/* ===============================
-   共通
-   =============================== */
+let processedReady = false;
 
 function show(id) {
-  [
-    "authView",
-    "householdView",
-    "appView"
-  ].forEach(x =>
-    document
-      .getElementById(x)
-      .classList
-      .add("hidden")
-  );
-
-  document
-    .getElementById(id)
-    .classList
-    .remove("hidden");
+  ["authView","householdView","appView"].forEach(x => {
+    document.getElementById(x).classList.add("hidden");
+  });
+  document.getElementById(id).classList.remove("hidden");
 }
 
 function message(text, type = "") {
-  const el =
-    document.getElementById("message");
-
+  const el = document.getElementById("message");
   el.textContent = text || "";
   el.className = "";
-
-  if (type) {
-    el.classList.add(type);
-  }
+  if (type) el.classList.add(type);
 }
 
 function escapeHtml(text) {
-  const d =
-    document.createElement("div");
-
+  const d = document.createElement("div");
   d.textContent = text;
-
   return d.innerHTML;
 }
 
-
-/* ===============================
-   ログイン
-   =============================== */
-
 async function signUp() {
-
   message("");
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
 
-  const email =
-    document
-      .getElementById("email")
-      .value
-      .trim();
+  const { data, error } = await db.auth.signUp({
+    email,
+    password,
+    options: { emailRedirectTo: location.origin + location.pathname }
+  });
 
-  const password =
-    document
-      .getElementById("password")
-      .value;
-
-  const { data, error } =
-    await db.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo:
-          location.origin +
-          location.pathname
-      }
-    });
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
+  if (error) return message(error.message, "error");
 
   if (data.session) {
-
-    message(
-      "登録しました",
-      "success"
-    );
-
+    message("登録しました", "success");
     await boot();
-
   } else {
-
-    message(
-      "確認メールを送信しました。メール内のリンクを開いてください。",
-      "success"
-    );
+    message("確認メールを送信しました。メール内のリンクを開いてください。", "success");
   }
 }
 
 async function signIn() {
-
   message("");
-
-  const email =
-    document
-      .getElementById("email")
-      .value
-      .trim();
-
-  const password =
-    document
-      .getElementById("password")
-      .value;
-
-  const { error } =
-    await db.auth
-      .signInWithPassword({
-        email,
-        password
-      });
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  const { error } = await db.auth.signInWithPassword({ email, password });
+  if (error) return message(error.message, "error");
   await boot();
 }
 
 async function signOut() {
-
   await stopScanner();
-
   if (realtimeChannel) {
-    await db.removeChannel(
-      realtimeChannel
-    );
-
+    await db.removeChannel(realtimeChannel);
     realtimeChannel = null;
   }
-
   currentHousehold = null;
-
   await db.auth.signOut();
-
   message("");
-
   show("authView");
 }
 
-
-/* ===============================
-   起動
-   =============================== */
-
 async function boot() {
+  const { data } = await db.auth.getSession();
+  if (!data.session) return show("authView");
 
-  const { data } =
-    await db.auth.getSession();
+  const { data: membership, error } = await db
+    .from("household_members")
+    .select("household_id")
+    .limit(1)
+    .maybeSingle();
 
-  if (!data.session) {
-    return show("authView");
-  }
-
-  const {
-    data: membership,
-    error
-  } =
-    await db
-      .from("household_members")
-      .select("household_id")
-      .limit(1)
-      .maybeSingle();
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
-  if (!membership) {
-    return show(
-      "householdView"
-    );
-  }
-
-  await openHousehold(
-    membership.household_id
-  );
+  if (error) return message(error.message, "error");
+  if (!membership) return show("householdView");
+  await openHousehold(membership.household_id);
 }
 
-
-/* ===============================
-   家
-   =============================== */
-
 async function createHousehold() {
+  const name = document.getElementById("houseName").value.trim();
+  if (!name) return message("家の名前を入力してください", "error");
 
-  const name =
-    document
-      .getElementById("houseName")
-      .value
-      .trim();
-
-  if (!name) {
-    return message(
-      "家の名前を入力してください",
-      "error"
-    );
-  }
-
-  const { data, error } =
-    await db.rpc(
-      "create_household",
-      {
-        p_name: name
-      }
-    );
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
-  await openHousehold(
-    data[0].household_id
-  );
+  const { data, error } = await db.rpc("create_household", { p_name: name });
+  if (error) return message(error.message, "error");
+  await openHousehold(data[0].household_id);
 }
 
 async function joinHousehold() {
+  const code = document.getElementById("inviteInput").value.trim();
+  if (!code) return message("招待コードを入力してください", "error");
 
-  const code =
-    document
-      .getElementById("inviteInput")
-      .value
-      .trim();
-
-  if (!code) {
-    return message(
-      "招待コードを入力してください",
-      "error"
-    );
-  }
-
-  const { data, error } =
-    await db.rpc(
-      "join_household",
-      {
-        p_invite_code: code
-      }
-    );
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
+  const { data, error } = await db.rpc("join_household", { p_invite_code: code });
+  if (error) return message(error.message, "error");
   await openHousehold(data);
 }
 
 async function openHousehold(id) {
+  const { data, error } = await db
+    .from("households")
+    .select("id,name,invite_code")
+    .eq("id", id)
+    .single();
 
-  const { data, error } =
-    await db
-      .from("households")
-      .select(
-        "id,name,invite_code"
-      )
-      .eq("id", id)
-      .single();
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
+  if (error) return message(error.message, "error");
 
   currentHousehold = data;
-
-  document
-    .getElementById(
-      "householdName"
-    )
-    .textContent =
-      data.name;
-
-  document
-    .getElementById(
-      "inviteCode"
-    )
-    .textContent =
-      data.invite_code;
-
+  document.getElementById("householdName").textContent = data.name;
+  document.getElementById("inviteCode").textContent = data.invite_code;
   show("appView");
-
   await loadItems();
-
   startRealtime();
 }
 
-
-/* ===============================
-   JANスキャナー
-   =============================== */
-
 async function startScanner() {
-
   message("");
-
   scanLock = false;
-
-  document
-    .getElementById(
-      "unknownProductView"
-    )
-    .classList
-    .add("hidden");
-
-  document
-    .getElementById(
-      "scannerArea"
-    )
-    .classList
-    .remove("hidden");
+  document.getElementById("unknownProductView").classList.add("hidden");
+  document.getElementById("scannerArea").classList.remove("hidden");
 
   try {
-
     if (!html5QrCode) {
-
-      html5QrCode =
-        new Html5Qrcode(
-          "reader",
-          {
-            formatsToSupport: [
-              Html5QrcodeSupportedFormats.EAN_13,
-              Html5QrcodeSupportedFormats.EAN_8,
-              Html5QrcodeSupportedFormats.UPC_A
-            ]
-          }
-        );
+      html5QrCode = new Html5Qrcode("reader", {
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.UPC_A
+        ]
+      });
     }
 
     await html5QrCode.start(
-      {
-        facingMode:
-          "environment"
-      },
-      {
-        fps: 10,
-        qrbox: {
-          width: 250,
-          height: 120
-        }
-      },
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 250, height: 120 } },
       async decodedText => {
-
-        if (scanLock) {
-          return;
-        }
-
+        if (scanLock) return;
         scanLock = true;
-
-        const jan =
-          String(decodedText)
-            .trim();
-
+        const jan = String(decodedText).trim();
         await stopScanner();
-
         await handleJan(jan);
       },
       () => {}
     );
 
     scannerRunning = true;
-
   } catch (err) {
-
     scannerRunning = false;
-
-    document
-      .getElementById(
-        "scannerArea"
-      )
-      .classList
-      .add("hidden");
-
-    message(
-      "カメラを開始できませんでした。ブラウザのカメラ権限を確認してください。",
-      "error"
-    );
-
+    document.getElementById("scannerArea").classList.add("hidden");
+    message("カメラを開始できませんでした。ブラウザのカメラ権限を確認してください。", "error");
     console.error(err);
   }
 }
 
 async function stopScanner() {
-
-  if (
-    html5QrCode &&
-    scannerRunning
-  ) {
-
-    try {
-      await html5QrCode.stop();
-    } catch (err) {
-      console.log(err);
-    }
+  if (html5QrCode && scannerRunning) {
+    try { await html5QrCode.stop(); } catch (err) { console.log(err); }
   }
-
   scannerRunning = false;
-
-  document
-    .getElementById(
-      "scannerArea"
-    )
-    .classList
-    .add("hidden");
+  document.getElementById("scannerArea").classList.add("hidden");
 }
 
 async function handleJan(jan) {
+  if (!currentHousehold) return;
+  message("JANを確認しています…");
 
-  if (!currentHousehold) {
-    return;
-  }
-
-  message(
-    "JANを確認しています…"
-  );
-
-  const {
-    data: product,
-    error
-  } =
-    await db
-      .from("products")
-      .select("*")
-      .eq(
-        "household_id",
-        currentHousehold.id
-      )
-      .eq(
-        "jan",
-        jan
-      )
-      .maybeSingle();
+  const { data: product, error } = await db
+    .from("products")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .eq("jan", jan)
+    .maybeSingle();
 
   if (error) {
-
     scanLock = false;
-
-    return message(
-      error.message,
-      "error"
-    );
+    return message(error.message, "error");
   }
 
   if (product) {
-
-    await putProductInStock(
-      product
-    );
-
+    await putProductInStock(product);
     scanLock = false;
-
     return;
   }
 
   pendingJan = jan;
-
-  document
-    .getElementById(
-      "scannedJan"
-    )
-    .textContent =
-      jan;
-
-  document
-    .getElementById(
-      "newProductName"
-    )
-    .value = "";
-
-  document
-    .getElementById(
-      "newProductStorage"
-    )
-    .value =
-      "fridge";
-
-  document
-    .getElementById(
-      "unknownProductView"
-    )
-    .classList
-    .remove("hidden");
-
-  message(
-    "初めての商品です。商品名を一度だけ教えてください。"
-  );
-
-  document
-    .getElementById(
-      "newProductName"
-    )
-    .focus();
+  document.getElementById("scannedJan").textContent = jan;
+  document.getElementById("newProductName").value = "";
+  document.getElementById("newProductStorage").value = "fridge";
+  document.getElementById("unknownProductView").classList.remove("hidden");
+  message("初めての商品です。商品名を一度だけ教えてください。");
+  document.getElementById("newProductName").focus();
 }
 
 async function saveNewProduct() {
+  if (!pendingJan) return message("JANがありません", "error");
 
-  if (!pendingJan) {
-    return message(
-      "JANがありません",
-      "error"
-    );
-  }
+  const name = document.getElementById("newProductName").value.trim();
+  const storage = document.getElementById("newProductStorage").value;
+  if (!name) return message("商品名を入力してください", "error");
 
-  const name =
-    document
-      .getElementById(
-        "newProductName"
-      )
-      .value
-      .trim();
+  const { data, error } = await db
+    .from("products")
+    .upsert({
+      household_id: currentHousehold.id,
+      jan: pendingJan,
+      name,
+      default_storage: storage
+    }, { onConflict: "household_id,jan" })
+    .select()
+    .single();
 
-  const storage =
-    document
-      .getElementById(
-        "newProductStorage"
-      )
-      .value;
-
-  if (!name) {
-    return message(
-      "商品名を入力してください",
-      "error"
-    );
-  }
-
-  const { data, error } =
-    await db
-      .from("products")
-      .upsert(
-        {
-          household_id:
-            currentHousehold.id,
-
-          jan:
-            pendingJan,
-
-          name,
-
-          default_storage:
-            storage
-        },
-        {
-          onConflict:
-            "household_id,jan"
-        }
-      )
-      .select()
-      .single();
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
+  if (error) return message(error.message, "error");
 
   pendingJan = null;
-
-  document
-    .getElementById(
-      "unknownProductView"
-    )
-    .classList
-    .add("hidden");
-
-  await putProductInStock(
-    data
-  );
-
+  document.getElementById("unknownProductView").classList.add("hidden");
+  await putProductInStock(data);
   scanLock = false;
 }
 
 function cancelUnknownProduct() {
-
   pendingJan = null;
   scanLock = false;
-
-  document
-    .getElementById(
-      "unknownProductView"
-    )
-    .classList
-    .add("hidden");
-
+  document.getElementById("unknownProductView").classList.add("hidden");
   message("");
 }
 
-async function putProductInStock(
-  product
-) {
+async function putProductInStock(product) {
+  const { data: existing, error: findError } = await db
+    .from("items")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .eq("jan", product.jan)
+    .maybeSingle();
 
-  const {
-    data: existing,
-    error: findError
-  } =
-    await db
-      .from("items")
-      .select("*")
-      .eq(
-        "household_id",
-        currentHousehold.id
-      )
-      .eq(
-        "jan",
-        product.jan
-      )
-      .maybeSingle();
-
-  if (findError) {
-    return message(
-      findError.message,
-      "error"
-    );
-  }
+  if (findError) return message(findError.message, "error");
 
   if (existing) {
-
-    const { error } =
-      await db
-        .from("items")
-        .update({
-          name:
-            product.name,
-
-          storage:
-            product.default_storage,
-
-          status:
-            "in_stock"
-        })
-        .eq(
-          "id",
-          existing.id
-        );
-
-    if (error) {
-      return message(
-        error.message,
-        "error"
-      );
-    }
-
+    const { error } = await db
+      .from("items")
+      .update({
+        name: product.name,
+        storage: product.default_storage,
+        status: "in_stock"
+      })
+      .eq("id", existing.id);
+    if (error) return message(error.message, "error");
   } else {
-
-    const { error } =
-      await db
-        .from("items")
-        .insert({
-          household_id:
-            currentHousehold.id,
-
-          name:
-            product.name,
-
-          storage:
-            product.default_storage,
-
-          status:
-            "in_stock",
-
-          jan:
-            product.jan
-        });
-
-    if (error) {
-      return message(
-        error.message,
-        "error"
-      );
-    }
+    const { error } = await db
+      .from("items")
+      .insert({
+        household_id: currentHousehold.id,
+        name: product.name,
+        storage: product.default_storage,
+        status: "in_stock",
+        jan: product.jan
+      });
+    if (error) return message(error.message, "error");
   }
 
-  message(
-    "✓ " +
-    product.name +
-    " を入庫しました",
-    "success"
-  );
-
+  message("✓ " + product.name + " を入庫しました", "success");
   await loadItems();
 }
 
-
-/* ===============================
-   v0.3 レシートOCR
-   =============================== */
+/* =========================================
+   v0.3.1 レシート前処理 + OCR
+   ========================================= */
 
 function receiptFileChanged() {
+  const input = document.getElementById("receiptFile");
+  const preview = document.getElementById("receiptPreview");
 
-  const input =
-    document.getElementById(
-      "receiptFile"
-    );
-
-  const preview =
-    document.getElementById(
-      "receiptPreview"
-    );
-
-  document
-    .getElementById(
-      "ocrResultArea"
-    )
-    .classList
-    .add("hidden");
-
-  document
-    .getElementById(
-      "ocrResult"
-    )
-    .value = "";
+  processedReady = false;
+  document.getElementById("processedPreviewArea").classList.add("hidden");
+  document.getElementById("ocrResultArea").classList.add("hidden");
+  document.getElementById("ocrProgressWrap").classList.add("hidden");
+  document.getElementById("ocrResult").value = "";
 
   if (receiptPreviewUrl) {
-
-    URL.revokeObjectURL(
-      receiptPreviewUrl
-    );
-
+    URL.revokeObjectURL(receiptPreviewUrl);
     receiptPreviewUrl = null;
   }
 
-  if (
-    !input.files ||
-    !input.files[0]
-  ) {
-
-    preview.classList.add(
-      "hidden"
-    );
-
-    preview.removeAttribute(
-      "src"
-    );
-
+  if (!input.files || !input.files[0]) {
+    document.getElementById("originalPreviewArea").classList.add("hidden");
+    preview.removeAttribute("src");
     return;
   }
 
-  receiptPreviewUrl =
-    URL.createObjectURL(
-      input.files[0]
-    );
-
-  preview.src =
-    receiptPreviewUrl;
-
-  preview.classList.remove(
-    "hidden"
-  );
-
+  receiptPreviewUrl = URL.createObjectURL(input.files[0]);
+  preview.src = receiptPreviewUrl;
+  document.getElementById("originalPreviewArea").classList.remove("hidden");
   message("");
 }
 
-function updateOcrProgress(m) {
+async function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("画像を読み込めませんでした"));
+    };
+    img.src = url;
+  });
+}
 
-  const wrap =
-    document.getElementById(
-      "ocrProgressWrap"
-    );
+function detectReceiptBounds(img) {
+  const maxAnalysisWidth = 700;
+  const scale = Math.min(1, maxAnalysisWidth / img.naturalWidth);
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
 
-  const fill =
-    document.getElementById(
-      "ocrProgressFill"
-    );
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
 
-  const status =
-    document.getElementById(
-      "ocrStatus"
-    );
+  const data = ctx.getImageData(0, 0, w, h).data;
 
-  wrap.classList.remove(
-    "hidden"
+  // レシートは中央に置く前提。外側の黒い机上物体を除外する。
+  const searchLeft = Math.floor(w * 0.16);
+  const searchRight = Math.ceil(w * 0.84);
+
+  const colScores = new Float32Array(w);
+  const darkThreshold = 175;
+
+  for (let x = searchLeft; x < searchRight; x++) {
+    let dark = 0;
+    for (let y = 0; y < h; y += 2) {
+      const i = (y * w + x) * 4;
+      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (gray < darkThreshold) dark++;
+    }
+    colScores[x] = dark;
+  }
+
+  // 横方向に平滑化して「文字が縦に存在する領域」を拾う。
+  const smooth = new Float32Array(w);
+  const radius = Math.max(3, Math.round(w * 0.01));
+  let rolling = 0;
+  for (let x = searchLeft; x < searchRight; x++) {
+    rolling += colScores[x];
+    if (x - radius >= searchLeft) rolling -= colScores[x - radius];
+    const count = Math.min(radius, x - searchLeft + 1);
+    smooth[x] = rolling / count;
+  }
+
+  const center = Math.floor(w / 2);
+  const minScore = Math.max(2, h * 0.006);
+  let left = center;
+  let right = center;
+
+  while (left > searchLeft && smooth[left] > minScore) left--;
+  while (right < searchRight - 1 && smooth[right] > minScore) right++;
+
+  // 中央が白抜けだった場合のフォールバック：閾値以上の最小/最大列。
+  if (right - left < w * 0.15) {
+    left = searchRight;
+    right = searchLeft;
+    for (let x = searchLeft; x < searchRight; x++) {
+      if (smooth[x] > minScore) {
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+      }
+    }
+  }
+
+  // まだおかしければ中央55%を使う。
+  if (right <= left || right - left < w * 0.18 || right - left > w * 0.68) {
+    left = Math.floor(w * 0.23);
+    right = Math.ceil(w * 0.77);
+  }
+
+  const xMargin = Math.round((right - left) * 0.10);
+  left = Math.max(0, left - xMargin);
+  right = Math.min(w, right + xMargin);
+
+  // 選んだ横幅内で文字がある最上部・最下部を探す。
+  let top = h;
+  let bottom = 0;
+  const rowMinDark = Math.max(2, Math.round((right - left) * 0.015));
+
+  for (let y = 0; y < h; y++) {
+    let dark = 0;
+    for (let x = left; x < right; x += 2) {
+      const i = (y * w + x) * 4;
+      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (gray < darkThreshold) dark++;
+    }
+    if (dark >= rowMinDark) {
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+  }
+
+  if (bottom <= top || bottom - top < h * 0.35) {
+    top = 0;
+    bottom = h - 1;
+  }
+
+  const yMargin = Math.round((bottom - top) * 0.035);
+  top = Math.max(0, top - yMargin);
+  bottom = Math.min(h - 1, bottom + yMargin);
+
+  return {
+    x: Math.round(left / scale),
+    y: Math.round(top / scale),
+    width: Math.round((right - left) / scale),
+    height: Math.round((bottom - top + 1) / scale)
+  };
+}
+
+function adaptiveBinarize(canvas) {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const w = canvas.width;
+  const h = canvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const p = img.data;
+
+  const gray = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < p.length; i += 4, j++) {
+    // 少しコントラストを強めたグレースケール
+    let g = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+    g = Math.max(0, Math.min(255, (g - 128) * 1.35 + 128));
+    gray[j] = g;
+  }
+
+  // 積分画像で局所平均を高速計算
+  const iw = w + 1;
+  const integral = new Uint32Array((w + 1) * (h + 1));
+
+  for (let y = 1; y <= h; y++) {
+    let rowSum = 0;
+    for (let x = 1; x <= w; x++) {
+      rowSum += gray[(y - 1) * w + (x - 1)];
+      integral[y * iw + x] = integral[(y - 1) * iw + x] + rowSum;
+    }
+  }
+
+  const radius = Math.max(12, Math.round(w * 0.018));
+  const offset = 13;
+
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - radius);
+    const y1 = Math.min(h - 1, y + radius);
+
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - radius);
+      const x1 = Math.min(w - 1, x + radius);
+
+      const A = integral[y0 * iw + x0];
+      const B = integral[y0 * iw + (x1 + 1)];
+      const C = integral[(y1 + 1) * iw + x0];
+      const D = integral[(y1 + 1) * iw + (x1 + 1)];
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      const mean = (D - B - C + A) / area;
+
+      const g = gray[y * w + x];
+      const v = g < (mean - offset) ? 0 : 255;
+      const i = (y * w + x) * 4;
+      p[i] = v;
+      p[i + 1] = v;
+      p[i + 2] = v;
+      p[i + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+}
+
+async function buildProcessedReceipt() {
+  const input = document.getElementById("receiptFile");
+  if (!input.files || !input.files[0]) {
+    throw new Error("先にレシート画像を選んでください");
+  }
+
+  const img = await loadImageFromFile(input.files[0]);
+  const bounds = detectReceiptBounds(img);
+
+  // OCRには文字の高さが重要。レシート幅を1000px程度まで拡大。
+  const targetWidth = Math.round(Math.min(1200, Math.max(900, bounds.width * 2.5)));
+  const scale = targetWidth / bounds.width;
+  const targetHeight = Math.max(1, Math.round(bounds.height * scale));
+
+  const canvas = document.getElementById("processedCanvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, targetWidth, targetHeight);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(
+    img,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    0,
+    0,
+    targetWidth,
+    targetHeight
   );
 
-  const pct =
-    typeof m.progress ===
-    "number"
-      ? Math.round(
-          m.progress * 100
-        )
-      : 0;
+  adaptiveBinarize(canvas);
+  processedReady = true;
+  document.getElementById("processedPreviewArea").classList.remove("hidden");
+  return canvas;
+}
 
-  fill.style.width =
-    pct + "%";
+async function previewPreprocess() {
+  const button = document.getElementById("preprocessButton");
+  button.disabled = true;
+  button.textContent = "加工中…";
+  message("レシート画像を加工しています…");
+
+  try {
+    await buildProcessedReceipt();
+    message("✓ 加工しました。下の白黒画像を確認してください。", "success");
+  } catch (err) {
+    console.error(err);
+    message(err.message || "画像加工に失敗しました。", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "① 画像を加工する";
+  }
+}
+
+function updateOcrProgress(m) {
+  const wrap = document.getElementById("ocrProgressWrap");
+  const fill = document.getElementById("ocrProgressFill");
+  const status = document.getElementById("ocrStatus");
+  wrap.classList.remove("hidden");
+
+  const pct = typeof m.progress === "number" ? Math.round(m.progress * 100) : 0;
+  fill.style.width = pct + "%";
 
   const labels = {
-
-    "loading tesseract core":
-      "OCRエンジンを読み込み中",
-
-    "initializing tesseract":
-      "OCRエンジンを初期化中",
-
-    "loading language traineddata":
-      "日本語データを読み込み中",
-
-    "initializing api":
-      "認識準備中",
-
-    "recognizing text":
-      "レシートを読み取り中"
+    "loading tesseract core": "OCRエンジンを読み込み中",
+    "initializing tesseract": "OCRエンジンを初期化中",
+    "loading language traineddata": "日本語データを読み込み中",
+    "initializing api": "認識準備中",
+    "recognizing text": "レシートを読み取り中"
   };
 
-  status.textContent =
-    (
-      labels[m.status] ||
-      m.status ||
-      "処理中"
-    ) +
-    (
-      typeof m.progress ===
-      "number"
-        ? ` ${pct}%`
-        : ""
-    );
+  status.textContent = (labels[m.status] || m.status || "処理中") +
+    (typeof m.progress === "number" ? ` ${pct}%` : "");
 }
 
 async function getOcrWorker() {
+  if (ocrWorker) return ocrWorker;
 
-  if (ocrWorker) {
-    return ocrWorker;
-  }
+  ocrWorker = await Tesseract.createWorker(["jpn", "eng"], 1, {
+    logger: updateOcrProgress
+  });
 
-  ocrWorker =
-    await Tesseract.createWorker(
-      [
-        "jpn",
-        "eng"
-      ],
-      1,
-      {
-        logger:
-          updateOcrProgress
-      }
-    );
+  await ocrWorker.setParameters({
+    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+    preserve_interword_spaces: "1",
+    user_defined_dpi: "300"
+  });
 
   return ocrWorker;
 }
 
 async function runReceiptOcr() {
+  const input = document.getElementById("receiptFile");
+  const button = document.getElementById("ocrButton");
+  const resultArea = document.getElementById("ocrResultArea");
+  const resultBox = document.getElementById("ocrResult");
+  const fill = document.getElementById("ocrProgressFill");
+  const status = document.getElementById("ocrStatus");
 
-  const input =
-    document.getElementById(
-      "receiptFile"
-    );
-
-  const button =
-    document.getElementById(
-      "ocrButton"
-    );
-
-  const resultArea =
-    document.getElementById(
-      "ocrResultArea"
-    );
-
-  const resultBox =
-    document.getElementById(
-      "ocrResult"
-    );
-
-  const fill =
-    document.getElementById(
-      "ocrProgressFill"
-    );
-
-  const status =
-    document.getElementById(
-      "ocrStatus"
-    );
-
-  if (
-    !input.files ||
-    !input.files[0]
-  ) {
-    return message(
-      "先にレシートを撮影するか、写真を選んでください。",
-      "error"
-    );
+  if (!input.files || !input.files[0]) {
+    return message("先にレシートを撮影するか、写真を選んでください。", "error");
   }
 
   button.disabled = true;
-
-  button.textContent =
-    "読み取り中…";
-
-  resultArea.classList.add(
-    "hidden"
-  );
-
-  fill.style.width =
-    "0%";
-
-  status.textContent =
-    "準備中…";
-
-  document
-    .getElementById(
-      "ocrProgressWrap"
-    )
-    .classList
-    .remove("hidden");
-
-  message(
-    "レシートをOCRしています…"
-  );
+  button.textContent = "読み取り中…";
+  resultArea.classList.add("hidden");
+  fill.style.width = "0%";
+  status.textContent = "準備中…";
+  document.getElementById("ocrProgressWrap").classList.remove("hidden");
+  message("加工画像をOCRしています…");
 
   try {
+    if (!processedReady) await buildProcessedReceipt();
+    const canvas = document.getElementById("processedCanvas");
+    const worker = await getOcrWorker();
 
-    const worker =
-      await getOcrWorker();
+    const { data: { text } } = await worker.recognize(canvas);
 
-    const {
-      data: {
-        text
-      }
-    } =
-      await worker.recognize(
-        input.files[0]
-      );
-
-    resultBox.value =
-      (text || "")
-        .trim();
-
-    resultArea.classList.remove(
-      "hidden"
-    );
-
-    fill.style.width =
-      "100%";
-
-    status.textContent =
-      "完了 100%";
-
-    message(
-      "✓ OCRが完了しました。在庫データは変更していません。",
-      "success"
-    );
-
+    resultBox.value = (text || "").trim();
+    resultArea.classList.remove("hidden");
+    fill.style.width = "100%";
+    status.textContent = "完了 100%";
+    message("✓ OCRが完了しました。在庫データは変更していません。", "success");
   } catch (err) {
-
     console.error(err);
-
-    message(
-      "OCRに失敗しました。別の写真で試すか、画像形式を確認してください。",
-      "error"
-    );
-
-    status.textContent =
-      "OCRエラー";
-
+    message("OCRに失敗しました。加工画像を確認してからもう一度試してください。", "error");
+    status.textContent = "OCRエラー";
   } finally {
-
-    button.disabled =
-      false;
-
-    button.textContent =
-      "文字を読み取る";
+    button.disabled = false;
+    button.textContent = "② 加工画像をOCRする";
   }
 }
 
 function clearReceiptOcr() {
-
-  document
-    .getElementById(
-      "ocrResult"
-    )
-    .value = "";
-
-  document
-    .getElementById(
-      "ocrResultArea"
-    )
-    .classList
-    .add("hidden");
-
-  document
-    .getElementById(
-      "ocrProgressWrap"
-    )
-    .classList
-    .add("hidden");
-
-  document
-    .getElementById(
-      "ocrProgressFill"
-    )
-    .style.width =
-      "0%";
-
+  document.getElementById("ocrResult").value = "";
+  document.getElementById("ocrResultArea").classList.add("hidden");
+  document.getElementById("ocrProgressWrap").classList.add("hidden");
+  document.getElementById("ocrProgressFill").style.width = "0%";
   message("");
 }
 
-
-/* ===============================
-   手動追加・在庫
-   =============================== */
-
 async function addItem() {
+  const name = document.getElementById("itemName").value.trim();
+  const storage = document.getElementById("storage").value;
+  if (!name) return message("商品名を入力してください", "error");
 
-  const name =
-    document
-      .getElementById(
-        "itemName"
-      )
-      .value
-      .trim();
+  const { error } = await db.from("items").insert({
+    household_id: currentHousehold.id,
+    name,
+    storage,
+    status: "in_stock"
+  });
 
-  const storage =
-    document
-      .getElementById(
-        "storage"
-      )
-      .value;
-
-  if (!name) {
-    return message(
-      "商品名を入力してください",
-      "error"
-    );
-  }
-
-  const { error } =
-    await db
-      .from("items")
-      .insert({
-        household_id:
-          currentHousehold.id,
-
-        name,
-
-        storage,
-
-        status:
-          "in_stock"
-      });
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
-  document
-    .getElementById(
-      "itemName"
-    )
-    .value = "";
-
+  if (error) return message(error.message, "error");
+  document.getElementById("itemName").value = "";
   await loadItems();
 }
 
 async function loadItems() {
+  if (!currentHousehold) return;
 
-  if (!currentHousehold) {
-    return;
-  }
+  const { data, error } = await db
+    .from("items")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .order("created_at", { ascending: true });
 
-  const { data, error } =
-    await db
-      .from("items")
-      .select("*")
-      .eq(
-        "household_id",
-        currentHousehold.id
-      )
-      .order(
-        "created_at",
-        {
-          ascending: true
-        }
-      );
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
-  renderItems(
-    data || []
-  );
+  if (error) return message(error.message, "error");
+  renderItems(data || []);
 }
 
 function renderItems(items) {
-
-  const stock =
-    document.getElementById(
-      "items"
-    );
-
-  const shopping =
-    document.getElementById(
-      "shopping"
-    );
-
+  const stock = document.getElementById("items");
+  const shopping = document.getElementById("shopping");
   stock.innerHTML = "";
   shopping.innerHTML = "";
 
-  const storageNames = {
-    fridge: "冷蔵",
-    freezer: "冷凍",
-    pantry: "常温"
-  };
+  const storageNames = { fridge: "冷蔵", freezer: "冷凍", pantry: "常温" };
 
   items.forEach(item => {
-
-    const div =
-      document.createElement(
-        "div"
-      );
-
-    div.className =
-      "item";
-
-    const janBadge =
-      item.jan
-        ? '<span class="badge">JAN</span>'
-        : "";
+    const div = document.createElement("div");
+    div.className = "item";
+    const janBadge = item.jan ? '<span class="badge">JAN</span>' : "";
 
     div.innerHTML = `
-      <div class="item-name">
-        ${escapeHtml(item.name)}
-        ${janBadge}
-      </div>
-
-      <div class="item-meta">
-        ${storageNames[item.storage]}
-      </div>
-
+      <div class="item-name">${escapeHtml(item.name)} ${janBadge}</div>
+      <div class="item-meta">${storageNames[item.storage]}</div>
       <div class="status-buttons">
-
-        <button
-          class="${item.status === "in_stock" ? "active" : ""}"
-          onclick="setStatus('${item.id}','in_stock')">
-          ある
-        </button>
-
-        <button
-          class="${item.status === "low" ? "active" : ""}"
-          onclick="setStatus('${item.id}','low')">
-          少ない
-        </button>
-
-        <button
-          class="${item.status === "out" ? "active" : ""}"
-          onclick="setStatus('${item.id}','out')">
-          ない
-        </button>
-
+        <button class="${item.status === "in_stock" ? "active" : ""}" onclick="setStatus('${item.id}','in_stock')">ある</button>
+        <button class="${item.status === "low" ? "active" : ""}" onclick="setStatus('${item.id}','low')">少ない</button>
+        <button class="${item.status === "out" ? "active" : ""}" onclick="setStatus('${item.id}','out')">ない</button>
       </div>
-
-      <button
-        class="danger"
-        onclick="deleteItem('${item.id}')">
-        削除
-      </button>
+      <button class="danger" onclick="deleteItem('${item.id}')">削除</button>
     `;
 
-    stock.appendChild(
-      div
-    );
+    stock.appendChild(div);
 
-    if (
-      item.status === "out" ||
-      item.status === "low"
-    ) {
-
-      const shop =
-        document.createElement(
-          "div"
-        );
-
-      shop.className =
-        "item";
-
-      shop.textContent =
-        item.status === "out"
-          ? "🛒 " + item.name
-          : "⚠️ " +
-            item.name +
-            "（少ない）";
-
-      shopping.appendChild(
-        shop
-      );
+    if (item.status === "out" || item.status === "low") {
+      const shop = document.createElement("div");
+      shop.className = "item";
+      shop.textContent = item.status === "out" ? "🛒 " + item.name : "⚠️ " + item.name + "（少ない）";
+      shopping.appendChild(shop);
     }
   });
 
-  if (!items.length) {
-
-    stock.textContent =
-      "まだ食品がありません";
-  }
-
-  if (
-    !items.some(
-      x =>
-        x.status === "out" ||
-        x.status === "low"
-    )
-  ) {
-
-    shopping.textContent =
-      "買い物候補はありません";
+  if (!items.length) stock.textContent = "まだ食品がありません";
+  if (!items.some(x => x.status === "out" || x.status === "low")) {
+    shopping.textContent = "買い物候補はありません";
   }
 }
 
-async function setStatus(
-  id,
-  status
-) {
-
-  const { error } =
-    await db
-      .from("items")
-      .update({
-        status
-      })
-      .eq(
-        "id",
-        id
-      );
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
+async function setStatus(id, status) {
+  const { error } = await db.from("items").update({ status }).eq("id", id);
+  if (error) return message(error.message, "error");
   await loadItems();
 }
 
 async function deleteItem(id) {
-
-  if (
-    !confirm(
-      "在庫一覧から削除しますか？"
-    )
-  ) {
-    return;
-  }
-
-  const { error } =
-    await db
-      .from("items")
-      .delete()
-      .eq(
-        "id",
-        id
-      );
-
-  if (error) {
-    return message(
-      error.message,
-      "error"
-    );
-  }
-
+  if (!confirm("在庫一覧から削除しますか？")) return;
+  const { error } = await db.from("items").delete().eq("id", id);
+  if (error) return message(error.message, "error");
   await loadItems();
 }
 
-
-/* ===============================
-   リアルタイム同期
-   =============================== */
-
 function startRealtime() {
+  if (realtimeChannel) db.removeChannel(realtimeChannel);
 
-  if (realtimeChannel) {
-
-    db.removeChannel(
-      realtimeChannel
-    );
-  }
-
-  realtimeChannel =
-    db
-      .channel(
-        "items-" +
-        currentHousehold.id
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "items",
-          filter:
-            "household_id=eq." +
-            currentHousehold.id
-        },
-        () =>
-          loadItems()
-      )
-      .subscribe();
+  realtimeChannel = db
+    .channel("items-" + currentHousehold.id)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "items",
+      filter: "household_id=eq." + currentHousehold.id
+    }, () => loadItems())
+    .subscribe();
 }
 
-
-/* ===============================
-   認証監視
-   =============================== */
-
-db.auth.onAuthStateChange(
-  (_event, session) => {
-
-    setTimeout(
-      () => {
-
-        if (session) {
-          boot();
-        }
-
-      },
-      0
-    );
-  }
-);
+db.auth.onAuthStateChange((_event, session) => {
+  setTimeout(() => {
+    if (session) boot();
+  }, 0);
+});
 
 boot();
-
 </script>
 </body>
 </html>
