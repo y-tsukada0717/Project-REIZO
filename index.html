@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.7</title>
+<title>REIZO v0.7.1</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -160,10 +160,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.7 レシート学習 + 購入履歴</div>
+<div class="section-tag">v0.7.1 レシート学習 + 重複検知</div>
 <h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
-Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。入庫時の購入履歴はREIZO側に自動で蓄積します。
+Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。同じレシートの撮り直しは、店舗・日時・取引番号などから重複を検知します。
 </p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
@@ -220,7 +220,7 @@ Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJAN�
 </div>
 
 <div class="warning-note">
-一度確定した「店舗 + レシート表記 + 商品」の対応はSupabaseに保存します。さらに、レシート入庫とJAN入庫は操作を増やさず購入履歴として自動記録します。
+一度確定した「店舗 + レシート表記 + 商品」の対応はSupabaseに保存します。v0.7.1では、同じレシートを別の写真で読み直しても購入履歴が二重になりにくいよう、安定したレシート情報で重複判定します。
 </div>
 </div>
 <div class="card">
@@ -711,7 +711,6 @@ async function recordPurchase(products, source, storeName = "", sourceRef = null
       .single();
 
     if (insertResult.error) {
-      // 同じレシートがほぼ同時に二重登録された場合は既存sessionを再利用
       if (sourceRef && insertResult.error.code === "23505") {
         const retryResult = await db
           .from("purchase_sessions")
@@ -745,6 +744,367 @@ async function recordPurchase(products, source, storeName = "", sourceRef = null
 
   if (eventResult.error) throw eventResult.error;
   return session.id;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function normalizeDigits(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[OoＯｏ]/g, "0")
+    .replace(/[^0-9]/g, "");
+}
+
+function extractReceiptDateTime(text) {
+  const normalized = String(text || "").normalize("NFKC");
+  const patterns = [
+    /(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日[^\n\d]{0,20}(\d{1,2})\s*[:：]\s*(\d{2})/,
+    /(20\d{2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,2})[^\n\d]{0,20}(\d{1,2})\s*[:：]\s*(\d{2})/
+  ];
+
+  for (const re of patterns) {
+    const m = normalized.match(re);
+    if (!m) continue;
+    return {
+      date: `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`,
+      time: `${pad2(m[4])}:${pad2(m[5])}`,
+      index: m.index ?? -1
+    };
+  }
+
+  const dateOnly = normalized.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/)
+    || normalized.match(/(20\d{2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{1,2})/);
+
+  return {
+    date: dateOnly ? `${dateOnly[1]}-${pad2(dateOnly[2])}-${pad2(dateOnly[3])}` : null,
+    time: null,
+    index: dateOnly?.index ?? -1
+  };
+}
+
+function extractReceiptNumber(text, anchorIndex = -1) {
+  const normalized = String(text || "").normalize("NFKC");
+  const tail = anchorIndex >= 0
+    ? normalized.slice(anchorIndex, anchorIndex + 1200)
+    : normalized;
+
+  const lines = tail.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const patterns = [
+    /(?:レシート|取引|伝票|会計|お買上)\s*(?:No\.?|番号)?\s*[:：#-]?\s*([0-9]{5,})/i,
+    /(?:^|\s)No\.?\s*[:：#-]?\s*([0-9]{5,})/i
+  ];
+
+  for (const line of lines.slice(0, 12)) {
+    for (const re of patterns) {
+      const m = line.match(re);
+      if (m) return normalizeDigits(m[1]);
+    }
+  }
+
+  return null;
+}
+
+function extractReceiptTotal(text, anchorIndex = -1) {
+  const normalized = String(text || "").normalize("NFKC");
+  const tail = anchorIndex >= 0 ? normalized.slice(anchorIndex) : normalized;
+  const lines = tail.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    if (!/合計/.test(line)) continue;
+    if (/小計|税合計|消費税|内税|外税/.test(line)) continue;
+
+    const nums = [...line.matchAll(/([0-9][0-9,]*)/g)]
+      .map(m => Number(m[1].replace(/,/g, "")))
+      .filter(n => Number.isFinite(n) && n >= 1 && n <= 10000000);
+
+    if (nums.length) return nums[nums.length - 1];
+  }
+
+  return null;
+}
+
+async function buildReceiptMetadata(receipt, products) {
+  const storeName = String(receipt?.store_name || "").trim();
+  const storeKey = normalizeReceiptKey(storeName);
+  const dateTime = extractReceiptDateTime(currentOcrText);
+  const receiptNumber = extractReceiptNumber(currentOcrText, dateTime.index);
+  const totalYen = extractReceiptTotal(currentOcrText, dateTime.index);
+  const productIds = [...new Set((products || []).map(p => p?.id).filter(Boolean))].sort();
+  const itemSignature = productIds.length
+    ? await sha256Text(productIds.join("|"))
+    : null;
+
+  let dedupeKey = null;
+  let slotKey = null;
+
+  if (storeKey && dateTime.date && dateTime.time) {
+    slotKey = await sha256Text(
+      `receipt-slot-v1|${storeKey}|${dateTime.date}|${dateTime.time}`
+    );
+
+    if (receiptNumber) {
+      dedupeKey = await sha256Text(
+        `receipt-strong-v1|${storeKey}|${dateTime.date}|${dateTime.time}|${receiptNumber}`
+      );
+    } else if (totalYen !== null) {
+      dedupeKey = await sha256Text(
+        `receipt-total-v1|${storeKey}|${dateTime.date}|${dateTime.time}|${totalYen}`
+      );
+    }
+  }
+
+  return {
+    storeName,
+    storeKey,
+    receiptDate: dateTime.date,
+    receiptTime: dateTime.time,
+    receiptNumber,
+    totalYen,
+    itemSignature,
+    dedupeKey,
+    slotKey,
+    rawFingerprint: currentReceiptFingerprint
+  };
+}
+
+async function getSessionProductSignature(sessionId) {
+  const { data, error } = await db
+    .from("purchase_events")
+    .select("product_id")
+    .eq("session_id", sessionId);
+
+  if (error) throw error;
+
+  const ids = [...new Set((data || []).map(x => x.product_id).filter(Boolean))].sort();
+  return ids.length ? await sha256Text(ids.join("|")) : null;
+}
+
+async function enrichReceiptSession(sessionId, meta) {
+  const patch = {
+    store_name: meta.storeName || "",
+    store_key: meta.storeKey || "",
+    receipt_date: meta.receiptDate || null,
+    receipt_time: meta.receiptTime || null,
+    receipt_number: meta.receiptNumber || null,
+    receipt_total_yen: meta.totalYen,
+    item_signature: meta.itemSignature || null,
+    receipt_slot_key: meta.slotKey || null
+  };
+
+  if (meta.dedupeKey) patch.dedupe_key = meta.dedupeKey;
+
+  const { error } = await db
+    .from("purchase_sessions")
+    .update(patch)
+    .eq("id", sessionId);
+
+  if (error && error.code !== "23505") throw error;
+}
+
+async function findExactReceiptSession(meta) {
+  if (meta.rawFingerprint) {
+    const byRaw = await db
+      .from("purchase_sessions")
+      .select("id,created_at,store_name")
+      .eq("household_id", currentHousehold.id)
+      .eq("source", "receipt")
+      .eq("source_ref", meta.rawFingerprint)
+      .maybeSingle();
+
+    if (byRaw.error) throw byRaw.error;
+    if (byRaw.data) return byRaw.data;
+  }
+
+  if (meta.dedupeKey) {
+    const byStrong = await db
+      .from("purchase_sessions")
+      .select("id,created_at,store_name")
+      .eq("household_id", currentHousehold.id)
+      .eq("source", "receipt")
+      .eq("dedupe_key", meta.dedupeKey)
+      .maybeSingle();
+
+    if (byStrong.error) throw byStrong.error;
+    if (byStrong.data) return byStrong.data;
+  }
+
+  return null;
+}
+
+async function findProbableReceiptSession(meta) {
+  // 新形式：同じ店舗・同じ日付・同じ分なら、まず重複候補。
+  if (meta.slotKey) {
+    const bySlot = await db
+      .from("purchase_sessions")
+      .select("id,created_at,store_name,receipt_date,receipt_time,receipt_number,item_signature")
+      .eq("household_id", currentHousehold.id)
+      .eq("source", "receipt")
+      .eq("receipt_slot_key", meta.slotKey)
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    if (bySlot.error) throw bySlot.error;
+    if (bySlot.data?.length) return bySlot.data[0];
+  }
+
+  // v0.7以前に作られた履歴は上のメタ情報を持たないため、
+  // 直近48時間のレシート履歴から「店舗 + 商品構成」で一度だけ確認する。
+  const recentSince = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const recent = await db
+    .from("purchase_sessions")
+    .select("id,created_at,store_name,receipt_date,receipt_time,receipt_number,item_signature")
+    .eq("household_id", currentHousehold.id)
+    .eq("source", "receipt")
+    .gte("created_at", recentSince)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (recent.error) throw recent.error;
+
+  for (const candidate of recent.data || []) {
+    if (meta.storeKey && normalizeReceiptKey(candidate.store_name) !== meta.storeKey) continue;
+    if (meta.receiptDate && candidate.receipt_date && candidate.receipt_date !== meta.receiptDate) continue;
+
+    let candidateSignature = candidate.item_signature || null;
+    if (!candidateSignature) {
+      candidateSignature = await getSessionProductSignature(candidate.id);
+    }
+
+    if (meta.itemSignature && candidateSignature === meta.itemSignature) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function duplicateConfirmationText(candidate, meta) {
+  const when = [
+    meta.receiptDate,
+    meta.receiptTime
+  ].filter(Boolean).join(" ");
+
+  const lines = [
+    "⚠️ 同じ買い物の可能性があります。",
+    "",
+    meta.storeName ? `店舗: ${meta.storeName}` : null,
+    when ? `レシート日時: ${when}` : null,
+    meta.receiptNumber ? `取引番号候補: ${meta.receiptNumber}` : null,
+    "商品構成またはレシート時刻が既存履歴と一致しています。",
+    "",
+    "OK：前回の買い物として扱う（購入回数を増やさない）",
+    "キャンセル：別の買い物として登録する"
+  ].filter(x => x !== null);
+
+  return lines.join("\n");
+}
+
+async function recordReceiptPurchase(products) {
+  if (!currentHousehold) throw new Error("家情報がありません");
+
+  const uniqueProducts = [];
+  const seen = new Set();
+  for (const product of products || []) {
+    if (!product?.id || seen.has(product.id)) continue;
+    seen.add(product.id);
+    uniqueProducts.push(product);
+  }
+  if (!uniqueProducts.length) return { sessionId: null, duplicate: false };
+
+  const meta = await buildReceiptMetadata(analyzedReceipt, uniqueProducts);
+
+  // 1) 同じOCR指紋、または店舗+日時+取引番号が一致 → 自動で同じ買い物。
+  let session = await findExactReceiptSession(meta);
+  let duplicate = Boolean(session);
+  let duplicateKind = duplicate ? "exact" : null;
+
+  // 2) 強一致しなくても、同じ店舗・同時刻・商品構成などが近ければ人間に確認。
+  if (!session) {
+    const probable = await findProbableReceiptSession(meta);
+    if (probable) {
+      const useExisting = window.confirm(duplicateConfirmationText(probable, meta));
+      if (useExisting) {
+        session = probable;
+        duplicate = true;
+        duplicateKind = "confirmed";
+        await enrichReceiptSession(session.id, meta);
+      }
+    }
+  }
+
+  // 3) 新しい買い物として保存。
+  if (!session) {
+    const insertPayload = {
+      household_id: currentHousehold.id,
+      source: "receipt",
+      store_name: meta.storeName || "",
+      store_key: meta.storeKey || "",
+      source_ref: meta.rawFingerprint || null,
+      dedupe_key: meta.dedupeKey || null,
+      receipt_slot_key: meta.slotKey || null,
+      receipt_date: meta.receiptDate || null,
+      receipt_time: meta.receiptTime || null,
+      receipt_number: meta.receiptNumber || null,
+      receipt_total_yen: meta.totalYen,
+      item_signature: meta.itemSignature || null
+    };
+
+    const inserted = await db
+      .from("purchase_sessions")
+      .insert(insertPayload)
+      .select("id")
+      .single();
+
+    if (inserted.error) {
+      // 別タブなどから同じレシートが同時登録された場合は既存側を使う。
+      if (inserted.error.code === "23505" && meta.dedupeKey) {
+        const retry = await db
+          .from("purchase_sessions")
+          .select("id")
+          .eq("household_id", currentHousehold.id)
+          .eq("source", "receipt")
+          .eq("dedupe_key", meta.dedupeKey)
+          .single();
+        if (retry.error) throw retry.error;
+        session = retry.data;
+        duplicate = true;
+        duplicateKind = "race";
+      } else {
+        throw inserted.error;
+      }
+    } else {
+      session = inserted.data;
+    }
+  }
+
+  const events = uniqueProducts.map(product => ({
+    session_id: session.id,
+    household_id: currentHousehold.id,
+    product_id: product.id
+  }));
+
+  const eventResult = await db
+    .from("purchase_events")
+    .upsert(events, {
+      onConflict: "session_id,product_id",
+      ignoreDuplicates: true
+    });
+
+  if (eventResult.error) throw eventResult.error;
+
+  // 同じレシートに後から未知商品を追加した場合も、同じsessionへ情報を足す。
+  if (duplicate) {
+    await enrichReceiptSession(session.id, meta);
+  }
+
+  return {
+    sessionId: session.id,
+    duplicate,
+    duplicateKind,
+    meta
+  };
 }
 
 function normalizeReceiptKey(value) {
@@ -1105,17 +1465,21 @@ async function stockRecognizedItems() {
       await ensureProductInStock(product);
     }
 
-    await recordPurchase(
-      uniqueProducts,
-      "receipt",
-      analyzedReceipt?.store_name || "",
-      currentReceiptFingerprint
-    );
+    const purchaseResult = await recordReceiptPurchase(uniqueProducts);
 
     await loadItems();
     await loadHouseholdInsights();
-    message("✓ " + uniqueProducts.length + "商品をまとめて入庫し、購入履歴も記録しました", "success");
-    button.textContent = "✓ 入庫・履歴記録済み";
+
+    if (purchaseResult.duplicate) {
+      message(
+        "✓ " + uniqueProducts.length + "商品を入庫しました。同じ買い物として扱ったため、購入回数は二重に増やしていません。",
+        "success"
+      );
+      button.textContent = "✓ 入庫済み（重複履歴なし）";
+    } else {
+      message("✓ " + uniqueProducts.length + "商品をまとめて入庫し、購入履歴も記録しました", "success");
+      button.textContent = "✓ 入庫・履歴記録済み";
+    }
   } catch (err) {
     message("入庫に失敗しました: " + (err.message || String(err)), "error");
     button.disabled = false;
