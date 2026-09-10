@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO</title>
+<title>REIZO v0.7</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -64,6 +64,21 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .receipt-actions button{margin-top:0}
 .receipt-link-panel{background:#f7f7f7;padding:12px;border-radius:12px;margin-top:12px}
 .receipt-summary{font-size:13px;color:#555;margin:10px 0}
+
+.insight-grid{display:grid;gap:10px}
+.insight-item{background:#f7f7f7;padding:12px;border-radius:12px}
+.insight-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.insight-name{font-weight:700;line-height:1.35}
+.insight-meta{font-size:13px;color:#666;margin-top:4px;line-height:1.45}
+.insight-status{display:inline-block;font-size:12px;padding:3px 8px;border-radius:999px;background:#eee;white-space:nowrap}
+.insight-status.in_stock{background:#eef8ee}
+.insight-status.low{background:#fff8e6}
+.insight-status.out{background:#fff0f0}
+.insight-actions{margin-top:8px}
+.insight-actions button{margin-top:0;padding:8px 10px;font-size:13px}
+.insight-empty{color:#777;font-size:14px;padding:8px 0}
+.staple-toggle{font-size:13px;padding:8px 10px;margin-top:8px}
+.dashboard-note{font-size:13px;color:#666;margin-top:-2px}
 </style>
 </head>
 
@@ -106,6 +121,19 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
+<div class="section-tag">v0.7 家の定番</div>
+<h2>★ 常備品</h2>
+<p class="dashboard-note">買う頻度とは別に「家に置いておきたいもの」を固定できます。</p>
+<div id="stapleList" class="insight-grid"></div>
+
+<hr>
+
+<h2>↻ よく買うもの</h2>
+<p class="dashboard-note">購入履歴から直近30日の購入回数を自動集計します。</p>
+<div id="frequentList" class="insight-grid"></div>
+</div>
+
+<div class="card">
 <div class="section-tag">JAN入庫</div>
 <h2>商品を入庫</h2>
 <button class="scan-button" onclick="startScanner()">📷 JANをスキャン</button>
@@ -132,7 +160,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.6 レシート学習 + 購入履歴</div>
+<div class="section-tag">v0.7 レシート学習 + 購入履歴</div>
 <h2>🧾 レシートから購入品を認識</h2>
 <p class="receipt-help">
 Google Cloud VisionとLLMで購入商品を認識し、未知の商品だけJANを一度教えます。入庫時の購入履歴はREIZO側に自動で蓄積します。
@@ -241,6 +269,9 @@ let receiptMatches = [];
 let pendingReceiptLink = null;
 let currentReceiptFingerprint = null;
 let currentOcrText = "";
+let currentItems = [];
+let currentProducts = [];
+let currentProductMap = new Map();
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
@@ -351,6 +382,7 @@ async function openHousehold(id) {
   document.getElementById("householdName").textContent = data.name;
   document.getElementById("inviteCode").textContent = data.invite_code;
   show("appView");
+  await loadHouseholdInsights();
   await loadItems();
   startRealtime();
 }
@@ -532,6 +564,7 @@ async function putProductInStock(product) {
 
   message("✓ " + product.name + " を入庫しました（購入履歴も記録）", "success");
   await loadItems();
+  await loadHouseholdInsights();
 }
 
 /* =========================================
@@ -1080,6 +1113,7 @@ async function stockRecognizedItems() {
     );
 
     await loadItems();
+    await loadHouseholdInsights();
     message("✓ " + uniqueProducts.length + "商品をまとめて入庫し、購入履歴も記録しました", "success");
     button.textContent = "✓ 入庫・履歴記録済み";
   } catch (err) {
@@ -1259,6 +1293,177 @@ async function addItem() {
   await loadItems();
 }
 
+
+/* =========================================
+   v0.7 常備品 / よく買うもの
+   ========================================= */
+
+async function loadHouseholdInsights() {
+  if (!currentHousehold) return;
+
+  const since = new Date(
+    Date.now() - 30 * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const [productResult, eventResult] = await Promise.all([
+    db
+      .from("products")
+      .select("id,name,jan,default_storage,is_staple")
+      .eq("household_id", currentHousehold.id)
+      .order("name", { ascending: true }),
+
+    db
+      .from("purchase_events")
+      .select("product_id,created_at")
+      .eq("household_id", currentHousehold.id)
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+  ]);
+
+  if (productResult.error) {
+    console.error("products insight error", productResult.error);
+    return message(productResult.error.message, "error");
+  }
+
+  if (eventResult.error) {
+    console.error("purchase insight error", eventResult.error);
+    return message(eventResult.error.message, "error");
+  }
+
+  currentProducts = productResult.data || [];
+  currentProductMap = new Map(
+    currentProducts.map(product => [product.id, product])
+  );
+
+  const counts = new Map();
+  const lastPurchased = new Map();
+
+  for (const event of eventResult.data || []) {
+    if (!event.product_id) continue;
+    counts.set(
+      event.product_id,
+      (counts.get(event.product_id) || 0) + 1
+    );
+
+    if (!lastPurchased.has(event.product_id)) {
+      lastPurchased.set(event.product_id, event.created_at);
+    }
+  }
+
+  for (const product of currentProducts) {
+    product.purchase_count_30d = counts.get(product.id) || 0;
+    product.last_purchased_at = lastPurchased.get(product.id) || null;
+  }
+
+  renderStaples();
+  renderFrequent();
+}
+
+function stockStateForProduct(productId) {
+  const item = currentItems.find(x => x.product_id === productId);
+  return item?.status || "out";
+}
+
+function stockStateLabel(status) {
+  if (status === "in_stock") return "ある";
+  if (status === "low") return "少ない";
+  return "ない";
+}
+
+function renderStaples() {
+  const box = document.getElementById("stapleList");
+  if (!box) return;
+
+  const staples = currentProducts
+    .filter(product => product.is_staple)
+    .sort((a, b) => a.name.localeCompare(b.name, "ja"));
+
+  box.innerHTML = "";
+
+  if (!staples.length) {
+    box.innerHTML = '<div class="insight-empty">まだ常備品はありません。在庫や「よく買うもの」から★を付けられます。</div>';
+    return;
+  }
+
+  for (const product of staples) {
+    const status = stockStateForProduct(product.id);
+    const div = document.createElement("div");
+    div.className = "insight-item";
+    div.innerHTML = `
+      <div class="insight-head">
+        <div>
+          <div class="insight-name">${escapeHtml(product.name)}</div>
+          <div class="insight-meta">直近30日 ${product.purchase_count_30d || 0}回購入</div>
+        </div>
+        <span class="insight-status ${status}">${stockStateLabel(status)}</span>
+      </div>
+      <div class="insight-actions">
+        <button onclick="setStaple('${product.id}', false)">★ 常備品を解除</button>
+      </div>
+    `;
+    box.appendChild(div);
+  }
+}
+
+function renderFrequent() {
+  const box = document.getElementById("frequentList");
+  if (!box) return;
+
+  const frequent = currentProducts
+    .filter(product => (product.purchase_count_30d || 0) > 0)
+    .sort((a, b) => {
+      const countDiff = (b.purchase_count_30d || 0) - (a.purchase_count_30d || 0);
+      if (countDiff) return countDiff;
+      const aTime = a.last_purchased_at ? new Date(a.last_purchased_at).getTime() : 0;
+      const bTime = b.last_purchased_at ? new Date(b.last_purchased_at).getTime() : 0;
+      if (bTime !== aTime) return bTime - aTime;
+      return a.name.localeCompare(b.name, "ja");
+    })
+    .slice(0, 5);
+
+  box.innerHTML = "";
+
+  if (!frequent.length) {
+    box.innerHTML = '<div class="insight-empty">購入履歴がたまると、ここに自動で表示されます。</div>';
+    return;
+  }
+
+  for (const product of frequent) {
+    const status = stockStateForProduct(product.id);
+    const div = document.createElement("div");
+    div.className = "insight-item";
+    div.innerHTML = `
+      <div class="insight-head">
+        <div>
+          <div class="insight-name">${escapeHtml(product.name)}</div>
+          <div class="insight-meta">直近30日 ${product.purchase_count_30d}回購入</div>
+        </div>
+        <span class="insight-status ${status}">${stockStateLabel(status)}</span>
+      </div>
+      <div class="insight-actions">
+        <button onclick="setStaple('${product.id}', ${product.is_staple ? 'false' : 'true'})">
+          ${product.is_staple ? '★ 常備品' : '☆ 常備品にする'}
+        </button>
+      </div>
+    `;
+    box.appendChild(div);
+  }
+}
+
+async function setStaple(productId, value) {
+  const { error } = await db
+    .from("products")
+    .update({ is_staple: Boolean(value) })
+    .eq("id", productId)
+    .eq("household_id", currentHousehold.id);
+
+  if (error) return message(error.message, "error");
+
+  await loadHouseholdInsights();
+  await loadItems();
+  message(value ? "★ 常備品に追加しました" : "常備品から外しました", "success");
+}
+
 async function loadItems() {
   if (!currentHousehold) return;
 
@@ -1269,7 +1474,10 @@ async function loadItems() {
     .order("created_at", { ascending: true });
 
   if (error) return message(error.message, "error");
-  renderItems(data || []);
+  currentItems = data || [];
+  renderItems(currentItems);
+  renderStaples();
+  renderFrequent();
 }
 
 function renderItems(items) {
@@ -1293,6 +1501,7 @@ function renderItems(items) {
         <button class="${item.status === "low" ? "active" : ""}" onclick="setStatus('${item.id}','low')">少ない</button>
         <button class="${item.status === "out" ? "active" : ""}" onclick="setStatus('${item.id}','out')">ない</button>
       </div>
+      ${item.product_id ? `<button class="staple-toggle" onclick="setStaple('${item.product_id}', ${currentProductMap.get(item.product_id)?.is_staple ? 'false' : 'true'})">${currentProductMap.get(item.product_id)?.is_staple ? '★ 常備品' : '☆ 常備品にする'}</button>` : ''}
       <button class="danger" onclick="deleteItem('${item.id}')">削除</button>
     `;
 
@@ -1316,6 +1525,8 @@ async function setStatus(id, status) {
   const { error } = await db.from("items").update({ status }).eq("id", id);
   if (error) return message(error.message, "error");
   await loadItems();
+  renderStaples();
+  renderFrequent();
 }
 
 async function deleteItem(id) {
@@ -1323,19 +1534,40 @@ async function deleteItem(id) {
   const { error } = await db.from("items").delete().eq("id", id);
   if (error) return message(error.message, "error");
   await loadItems();
+  renderStaples();
+  renderFrequent();
 }
 
 function startRealtime() {
   if (realtimeChannel) db.removeChannel(realtimeChannel);
 
   realtimeChannel = db
-    .channel("items-" + currentHousehold.id)
+    .channel("household-" + currentHousehold.id)
     .on("postgres_changes", {
       event: "*",
       schema: "public",
       table: "items",
       filter: "household_id=eq." + currentHousehold.id
-    }, () => loadItems())
+    }, async () => {
+      await loadItems();
+    })
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "products",
+      filter: "household_id=eq." + currentHousehold.id
+    }, async () => {
+      await loadHouseholdInsights();
+      await loadItems();
+    })
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "purchase_events",
+      filter: "household_id=eq." + currentHousehold.id
+    }, async () => {
+      await loadHouseholdInsights();
+    })
     .subscribe();
 }
 
