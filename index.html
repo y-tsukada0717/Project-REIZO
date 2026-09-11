@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.8.1</title>
+<title>REIZO v0.9</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -121,7 +121,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.7 家の定番</div>
+<div class="section-tag">家の定番</div>
 <h2>★ 常備品</h2>
 <p class="dashboard-note">買う頻度とは別に「家に置いておきたいもの」を固定できます。</p>
 <div id="stapleList" class="insight-grid"></div>
@@ -160,11 +160,8 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 </div>
 
 <div class="card">
-<div class="section-tag">v0.8.1 表記ゆれ耐性 + REIZO記憶優先</div>
-<h2>🧾 レシートから購入品を認識</h2>
-<p class="receipt-help">
-Google Cloud Visionで文字を読み、記号・空白・ひらがな/カタカナなどの表記ゆれを正規化してからREIZOの記憶と照合します。1文字程度のOCR揺れも高確信なら吸収し、未知・曖昧なときだけAIに助けてもらいます。
-</p>
+<h2>🧾 レシートから追加</h2>
+<p class="receipt-help">レシートを撮ると、買ったものをまとめて確認できます。</p>
 
 <input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
 
@@ -219,13 +216,12 @@ Google Cloud Visionで文字を読み、記号・空白・ひらがな/カタカ
 <button onclick="clearReceiptOcr()">結果をクリア</button>
 </div>
 
-<div class="warning-note">
-一度確定した「店舗 + レシート表記 + 商品」の対応はREIZOの記憶としてSupabaseに残ります。v0.8.1ではOCRの表記ゆれを正規化・あいまい照合し、高確信で一致した新しい読み方も安全に記憶します。曖昧ならAIへ回し、重複検知はv0.7.1の仕組みを維持します。
-</div>
+<div class="warning-note">一度覚えた商品は、次からできるだけ自動で処理します。</div>
 </div>
 <div class="card">
-<h2>手動で追加</h2>
-<input id="itemName" placeholder="例：キャベツ">
+<h2>家にあるものを追加</h2>
+<p class="receipt-help">使い始めは、JANが分からなくても「味噌」「牛乳」のような名前だけでOKです。</p>
+<input id="itemName" placeholder="例：味噌">
 <select id="storage">
 <option value="fridge">冷蔵</option>
 <option value="freezer">冷凍</option>
@@ -273,6 +269,8 @@ let currentReceiptAnalysisMode = null;
 let currentItems = [];
 let currentProducts = [];
 let currentProductMap = new Map();
+let currentConcepts = [];
+let currentConceptMap = new Map();
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
@@ -466,6 +464,200 @@ async function handleJan(jan) {
   document.getElementById("newProductName").focus();
 }
 
+function conceptKey(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s　]+/g, "")
+    .replace(/[※＊*・･,，.。\/\\()（）\[\]【】「」『』:：;；_-]+/g, "");
+}
+
+async function refreshFoodConcepts() {
+  if (!currentHousehold) return [];
+
+  const { data, error } = await db
+    .from("food_concepts")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .order("name", { ascending: true });
+
+  if (error) throw error;
+
+  currentConcepts = data || [];
+  currentConceptMap = new Map(currentConcepts.map(x => [x.id, x]));
+  return currentConcepts;
+}
+
+async function ensureFoodConcept(name, storage = "fridge") {
+  const cleanName = String(name || "").trim();
+  if (!cleanName) throw new Error("食品名がありません");
+
+  const nameKey = conceptKey(cleanName);
+  if (!nameKey) throw new Error("食品名を認識できませんでした");
+
+  const found = await db
+    .from("food_concepts")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .eq("name_key", nameKey)
+    .maybeSingle();
+
+  if (found.error) throw found.error;
+  if (found.data) {
+    currentConceptMap.set(found.data.id, found.data);
+    if (!currentConcepts.some(x => x.id === found.data.id)) currentConcepts.push(found.data);
+    return found.data;
+  }
+
+  const inserted = await db
+    .from("food_concepts")
+    .insert({
+      household_id: currentHousehold.id,
+      name: cleanName,
+      name_key: nameKey,
+      default_storage: storage
+    })
+    .select()
+    .single();
+
+  if (inserted.error) {
+    // 別端末が同時に同じ概念を作った場合は取り直す
+    if (inserted.error.code === "23505") {
+      const retry = await db
+        .from("food_concepts")
+        .select("*")
+        .eq("household_id", currentHousehold.id)
+        .eq("name_key", nameKey)
+        .single();
+      if (retry.error) throw retry.error;
+      currentConceptMap.set(retry.data.id, retry.data);
+      if (!currentConcepts.some(x => x.id === retry.data.id)) currentConcepts.push(retry.data);
+      return retry.data;
+    }
+    throw inserted.error;
+  }
+
+  currentConceptMap.set(inserted.data.id, inserted.data);
+  currentConcepts.push(inserted.data);
+  return inserted.data;
+}
+
+async function classifyHouseholdName(productName) {
+  const fallback = String(productName || "").trim();
+  if (!fallback) return fallback;
+
+  try {
+    const knownHouseholdNames = currentConcepts.map(x => x.name);
+    const { data, error } = await db.functions.invoke("receipt-analyze", {
+      body: {
+        ocrText: fallback,
+        classificationOnly: true,
+        knownHouseholdNames
+      }
+    });
+
+    if (error || data?.error) return fallback;
+    const item = data?.receipt?.items?.[0];
+    return String(item?.household_name || fallback).trim() || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function attachProductToConcept(product, preferredName = null) {
+  if (!product) throw new Error("商品情報がありません");
+
+  // AIや既存データが具体的な家庭内名を持っている場合はそちらを優先。
+  // ただし既に同じ概念へ結びついていて preferredName が無ければ再分類しない。
+  if (product.concept_id && !preferredName) {
+    let concept = currentConceptMap.get(product.concept_id);
+    if (!concept) {
+      const result = await db
+        .from("food_concepts")
+        .select("*")
+        .eq("id", product.concept_id)
+        .single();
+      if (result.error) throw result.error;
+      concept = result.data;
+      currentConceptMap.set(concept.id, concept);
+    }
+    return { product, concept };
+  }
+
+  const conceptName = String(preferredName || product.name || "").trim();
+  const concept = await ensureFoodConcept(conceptName, product.default_storage || "fridge");
+
+  if (product.concept_id !== concept.id) {
+    const updated = await db
+      .from("products")
+      .update({ concept_id: concept.id })
+      .eq("id", product.id)
+      .eq("household_id", currentHousehold.id)
+      .select()
+      .single();
+
+    if (updated.error) throw updated.error;
+    product = updated.data;
+  }
+
+  return { product, concept };
+}
+
+async function findExistingStockForConcept(conceptId) {
+  const result = await db
+    .from("items")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .eq("concept_id", conceptId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (result.error) throw result.error;
+  return result.data || null;
+}
+
+async function ensureConceptInStock(concept, product = null) {
+  const existing = await findExistingStockForConcept(concept.id);
+  const storage = concept.default_storage || product?.default_storage || "fridge";
+
+  if (existing) {
+    const { error } = await db
+      .from("items")
+      .update({
+        concept_id: concept.id,
+        product_id: product?.id || existing.product_id || null,
+        name: concept.name,
+        storage,
+        status: "in_stock",
+        jan: product?.jan || existing.jan || null
+      })
+      .eq("id", existing.id);
+    if (error) throw error;
+    return;
+  }
+
+  const { error } = await db
+    .from("items")
+    .insert({
+      household_id: currentHousehold.id,
+      concept_id: concept.id,
+      product_id: product?.id || null,
+      name: concept.name,
+      storage,
+      status: "in_stock",
+      jan: product?.jan || null
+    });
+
+  if (error) throw error;
+}
+
+async function ensureProductInStock(product, householdName = null) {
+  const linked = await attachProductToConcept(product, householdName);
+  await ensureConceptInStock(linked.concept, linked.product);
+  return linked;
+}
+
 async function saveNewProduct() {
   if (!pendingJan) return message("JANがありません", "error");
 
@@ -473,13 +665,18 @@ async function saveNewProduct() {
   const storage = document.getElementById("newProductStorage").value;
   if (!name) return message("商品名を入力してください", "error");
 
+  message("商品を登録しています…");
+  const householdName = await classifyHouseholdName(name);
+  const concept = await ensureFoodConcept(householdName, storage);
+
   const { data, error } = await db
     .from("products")
     .upsert({
       household_id: currentHousehold.id,
       jan: pendingJan,
       name,
-      default_storage: storage
+      default_storage: storage,
+      concept_id: concept.id
     }, { onConflict: "household_id,jan" })
     .select()
     .single();
@@ -488,7 +685,7 @@ async function saveNewProduct() {
 
   pendingJan = null;
   document.getElementById("unknownProductView").classList.add("hidden");
-  await putProductInStock(data);
+  await putProductInStock(data, concept.name);
   scanLock = false;
 }
 
@@ -499,73 +696,17 @@ function cancelUnknownProduct() {
   message("");
 }
 
-async function findExistingStockForProduct(product) {
-  let { data: existing, error } = await db
-    .from("items")
-    .select("*")
-    .eq("household_id", currentHousehold.id)
-    .eq("product_id", product.id)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (existing) return existing;
-
-  // v0.2以前のJAN在庫との互換用
-  if (product.jan) {
-    const fallback = await db
-      .from("items")
-      .select("*")
-      .eq("household_id", currentHousehold.id)
-      .eq("jan", product.jan)
-      .maybeSingle();
-    if (fallback.error) throw fallback.error;
-    return fallback.data;
-  }
-
-  return null;
-}
-
-async function ensureProductInStock(product) {
-  const existing = await findExistingStockForProduct(product);
-
-  if (existing) {
-    const { error } = await db
-      .from("items")
-      .update({
-        product_id: product.id,
-        name: product.name,
-        storage: product.default_storage,
-        status: "in_stock",
-        jan: product.jan || null
-      })
-      .eq("id", existing.id);
-    if (error) throw error;
-  } else {
-    const { error } = await db
-      .from("items")
-      .insert({
-        household_id: currentHousehold.id,
-        product_id: product.id,
-        name: product.name,
-        storage: product.default_storage,
-        status: "in_stock",
-        jan: product.jan || null
-      });
-    if (error) throw error;
-  }
-}
-
-async function putProductInStock(product) {
+async function putProductInStock(product, householdName = null) {
   try {
-    await ensureProductInStock(product);
-    await recordPurchase([product], "jan");
+    const linked = await ensureProductInStock(product, householdName);
+    await recordPurchase([linked.product], "jan");
+    message("✓ " + linked.concept.name + " を入庫しました", "success");
   } catch (err) {
     return message(err.message || String(err), "error");
   }
 
-  message("✓ " + product.name + " を入庫しました（購入履歴も記録）", "success");
-  await loadItems();
   await loadHouseholdInsights();
+  await loadItems();
 }
 
 /* =========================================
@@ -1450,6 +1591,7 @@ async function tryResolveReceiptFromMemory(ocrText) {
     items: matches.map(match => ({
       receipt_name: cleanReceiptProductText(match.matchedLine) || match.alias.receipt_name,
       normalized_name: match.product.name,
+      household_name: currentConceptMap.get(match.product.concept_id)?.name || match.product.name,
       quantity: 1,
       unit_price_yen: null,
       line_total_yen: null
@@ -1463,6 +1605,7 @@ async function tryResolveReceiptFromMemory(ocrText) {
       item: {
         receipt_name: cleanReceiptProductText(match.matchedLine) || match.alias.receipt_name,
         normalized_name: match.product.name,
+        household_name: currentConceptMap.get(match.product.concept_id)?.name || match.product.name,
         quantity: 1,
         unit_price_yen: null,
         line_total_yen: null
@@ -1596,26 +1739,13 @@ function renderReceiptLearning() {
   meta.classList.add("hidden");
 
   if (!analyzedReceipt || !Array.isArray(analyzedReceipt.items)) {
-    box.innerHTML = '<div class="candidate">AI解析結果の形式が正しくありません。</div>';
+    box.innerHTML = '<div class="candidate">読み取り結果を整理できませんでした。</div>';
     bulk.classList.add("hidden");
     return;
   }
 
-  const metaParts = [];
-  if (analyzedReceipt.store_name) metaParts.push("店舗: " + escapeHtml(String(analyzedReceipt.store_name)));
-  if (analyzedReceipt.purchase_date) metaParts.push("購入日: " + escapeHtml(String(analyzedReceipt.purchase_date)));
-  if (currentReceiptAnalysisMode === "memory") {
-    metaParts.push("処理: REIZO記憶のみ（正規化・表記ゆれ照合 / LLM未使用）");
-  } else if (currentReceiptAnalysisMode === "ai") {
-    metaParts.push("処理: REIZO記憶で未確定 → AI補助");
-  }
-  if (metaParts.length) {
-    meta.innerHTML = metaParts.join("<br>");
-    meta.classList.remove("hidden");
-  }
-
   if (!receiptMatches.length) {
-    box.innerHTML = '<div class="candidate">購入商品を特定できませんでした。OCR全文を確認してください。</div>';
+    box.innerHTML = '<div class="candidate">購入商品を特定できませんでした。</div>';
     bulk.classList.add("hidden");
     return;
   }
@@ -1625,41 +1755,37 @@ function renderReceiptLearning() {
     const div = document.createElement("div");
     div.className = "ai-item";
 
-    const name = String(item.normalized_name || item.receipt_name || "商品名不明");
-    const receiptName = String(item.receipt_name || "");
-    const quantity = Math.max(1, Number(item.quantity) || 1);
+    const knownConcept = entry.product?.concept_id
+      ? currentConceptMap.get(entry.product.concept_id)
+      : null;
+    const name = String(
+      knownConcept?.name ||
+      item.household_name ||
+      item.normalized_name ||
+      item.receipt_name ||
+      "商品名不明"
+    );
 
     let stateHtml = "";
     let actionsHtml = "";
 
     if (entry.state === "known") {
-      const fuzzy = entry.matchType && entry.matchType !== "exact";
-      const pct = entry.matchScore ? Math.round(entry.matchScore * 100) : null;
-      const matchNote = fuzzy
-        ? ` <span class="badge">表記ゆれ一致${pct ? ` ${pct}%` : ""}</span>`
-        : "";
-      stateHtml = `<div class="receipt-state known">✓ REIZO登録済み → ${escapeHtml(entry.product.name)}${matchNote}</div>`;
+      stateHtml = '<div class="receipt-state known">✓ 登録済み</div>';
     } else if (entry.state === "skip") {
-      stateHtml = '<div class="receipt-state skip">今回は在庫管理しません</div>';
-      actionsHtml = `<div class="receipt-actions"><button onclick="restoreReceiptItem(${index})">管理対象に戻す</button></div>`;
+      stateHtml = '<div class="receipt-state skip">今回は追加しません</div>';
+      actionsHtml = `<div class="receipt-actions"><button onclick="restoreReceiptItem(${index})">戻す</button></div>`;
     } else {
-      stateHtml = '<div class="receipt-state unknown">未登録：この商品を一度だけ教えてください</div>';
+      stateHtml = '<div class="receipt-state unknown">初回だけ登録が必要です</div>';
       actionsHtml = `
         <div class="receipt-actions">
-          <button onclick="startReceiptScanner(${index})">📷 JANをスキャンして覚える</button>
-          <button onclick="openReceiptLinkForm(${index}, null)">JANなしで覚える</button>
-          <button onclick="skipReceiptItem(${index})">今回は管理しない</button>
+          <button onclick="startReceiptScanner(${index})">📷 JANをスキャン</button>
+          <button onclick="openReceiptLinkForm(${index}, null)">JANなしで登録</button>
+          <button onclick="skipReceiptItem(${index})">今回は追加しない</button>
         </div>`;
     }
 
-    const original = receiptName && receiptName !== name
-      ? `<div class="ai-item-detail">レシート表記: ${escapeHtml(receiptName)}</div>`
-      : "";
-
     div.innerHTML = `
       <div class="ai-item-name">${escapeHtml(name)}</div>
-      <div class="ai-item-detail">${quantity}個として認識（現スコープでは在庫は0/1管理）</div>
-      ${original}
       ${stateHtml}
       ${actionsHtml}
     `;
@@ -1671,10 +1797,10 @@ function renderReceiptLearning() {
   const unknownCount = receiptMatches.filter(x => x.state === "unknown").length;
   const skipCount = receiptMatches.filter(x => x.state === "skip").length;
 
-  summary.textContent = `登録済み ${knownCount}件 / 未登録 ${unknownCount}件 / 対象外 ${skipCount}件`;
+  summary.textContent = `登録済み ${knownCount} / 初回登録 ${unknownCount}${skipCount ? ` / 対象外 ${skipCount}` : ""}`;
 
   if (knownCount > 0 && unknownCount === 0) {
-    bulk.textContent = `登録済み${knownCount}商品をまとめて入庫`;
+    bulk.textContent = "まとめて入庫";
     bulk.classList.remove("hidden");
   } else {
     bulk.classList.add("hidden");
@@ -1744,8 +1870,11 @@ async function handleReceiptJan(index, jan) {
   if (error) return message(error.message, "error");
 
   if (product) {
-    const ok = await saveReceiptAlias(index, product);
-    if (ok) message("✓ 既存商品「" + product.name + "」に紐づけました", "success");
+    const entry = receiptMatches[index];
+    const preferred = entry?.item?.household_name || null;
+    const linked = await attachProductToConcept(product, preferred);
+    const ok = await saveReceiptAlias(index, linked.product);
+    if (ok) message("✓ 登録しました", "success");
     return;
   }
 
@@ -1758,8 +1887,9 @@ function openReceiptLinkForm(index, jan) {
 
   pendingReceiptLink = { index, jan: jan || null };
   const name = String(entry.item.normalized_name || entry.item.receipt_name || "");
+  const householdName = String(entry.item.household_name || name);
 
-  document.getElementById("receiptLinkTarget").textContent = "レシート商品: " + name;
+  document.getElementById("receiptLinkTarget").textContent = householdName;
   document.getElementById("receiptLinkJan").textContent = jan ? ("JAN: " + jan) : "JANなし商品として登録";
   document.getElementById("receiptLinkProductName").value = name;
   document.getElementById("receiptLinkStorage").value = "fridge";
@@ -1780,6 +1910,10 @@ async function saveReceiptLinkedProduct() {
   const storage = document.getElementById("receiptLinkStorage").value;
   if (!name) return message("商品名を入力してください", "error");
 
+  const entry = receiptMatches[index];
+  const householdName = String(entry?.item?.household_name || name).trim();
+  const concept = await ensureFoodConcept(householdName, storage);
+
   let product = null;
 
   if (jan) {
@@ -1789,7 +1923,8 @@ async function saveReceiptLinkedProduct() {
         household_id: currentHousehold.id,
         jan,
         name,
-        default_storage: storage
+        default_storage: storage,
+        concept_id: concept.id
       }, { onConflict: "household_id,jan" })
       .select()
       .single();
@@ -1803,7 +1938,8 @@ async function saveReceiptLinkedProduct() {
         household_id: currentHousehold.id,
         jan: null,
         name,
-        default_storage: storage
+        default_storage: storage,
+        concept_id: concept.id
       })
       .select()
       .single();
@@ -1814,9 +1950,10 @@ async function saveReceiptLinkedProduct() {
 
   const ok = await saveReceiptAlias(index, product);
   if (!ok) return;
+
   pendingReceiptLink = null;
   document.getElementById("receiptLinkForm").classList.add("hidden");
-  message("✓ 「" + name + "」をREIZOに覚えさせました", "success");
+  message("✓ " + concept.name + " を覚えました", "success");
 }
 
 async function saveReceiptAlias(index, product) {
@@ -1890,7 +2027,8 @@ async function stockRecognizedItems() {
 
   try {
     for (const product of uniqueProducts) {
-      await ensureProductInStock(product);
+      const entry = known.find(x => x.product?.id === product.id);
+      await ensureProductInStock(product, entry?.item?.household_name || null);
     }
 
     const purchaseResult = await recordReceiptPurchase(uniqueProducts);
@@ -2017,7 +2155,10 @@ async function runReceiptOcr() {
       console.log("REIZO memory fast-path fallback:", memoryResult);
 
       const { data: analyzeData, error: analyzeError } = await db.functions.invoke("receipt-analyze", {
-        body: { ocrText }
+        body: {
+          ocrText,
+          knownHouseholdNames: currentConcepts.map(x => x.name)
+        }
       });
 
       if (analyzeError) {
@@ -2095,23 +2236,23 @@ async function clearReceiptOcr() {
 async function addItem() {
   const name = document.getElementById("itemName").value.trim();
   const storage = document.getElementById("storage").value;
-  if (!name) return message("商品名を入力してください", "error");
+  if (!name) return message("食品名を入力してください", "error");
 
-  const { error } = await db.from("items").insert({
-    household_id: currentHousehold.id,
-    name,
-    storage,
-    status: "in_stock"
-  });
-
-  if (error) return message(error.message, "error");
-  document.getElementById("itemName").value = "";
-  await loadItems();
+  try {
+    const concept = await ensureFoodConcept(name, storage);
+    await ensureConceptInStock(concept, null);
+    document.getElementById("itemName").value = "";
+    await loadHouseholdInsights();
+    await loadItems();
+    message("✓ " + concept.name + " を追加しました", "success");
+  } catch (err) {
+    message(err.message || String(err), "error");
+  }
 }
 
 
 /* =========================================
-   v0.7 常備品 / よく買うもの
+   v0.9 常備品 / よく買うものを「家庭内概念」で集計
    ========================================= */
 
 async function loadHouseholdInsights() {
@@ -2121,10 +2262,16 @@ async function loadHouseholdInsights() {
     Date.now() - 30 * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  const [productResult, eventResult] = await Promise.all([
+  const [conceptResult, productResult, eventResult] = await Promise.all([
+    db
+      .from("food_concepts")
+      .select("*")
+      .eq("household_id", currentHousehold.id)
+      .order("name", { ascending: true }),
+
     db
       .from("products")
-      .select("id,name,jan,default_storage,is_staple")
+      .select("id,name,jan,default_storage,is_staple,concept_id")
       .eq("household_id", currentHousehold.id)
       .order("name", { ascending: true }),
 
@@ -2136,47 +2283,41 @@ async function loadHouseholdInsights() {
       .order("created_at", { ascending: false })
   ]);
 
-  if (productResult.error) {
-    console.error("products insight error", productResult.error);
-    return message(productResult.error.message, "error");
-  }
+  if (conceptResult.error) return message(conceptResult.error.message, "error");
+  if (productResult.error) return message(productResult.error.message, "error");
+  if (eventResult.error) return message(eventResult.error.message, "error");
 
-  if (eventResult.error) {
-    console.error("purchase insight error", eventResult.error);
-    return message(eventResult.error.message, "error");
-  }
+  currentConcepts = conceptResult.data || [];
+  currentConceptMap = new Map(currentConcepts.map(x => [x.id, x]));
 
   currentProducts = productResult.data || [];
-  currentProductMap = new Map(
-    currentProducts.map(product => [product.id, product])
-  );
+  currentProductMap = new Map(currentProducts.map(product => [product.id, product]));
 
   const counts = new Map();
   const lastPurchased = new Map();
 
   for (const event of eventResult.data || []) {
-    if (!event.product_id) continue;
-    counts.set(
-      event.product_id,
-      (counts.get(event.product_id) || 0) + 1
-    );
+    const product = currentProductMap.get(event.product_id);
+    const conceptId = product?.concept_id;
+    if (!conceptId) continue;
 
-    if (!lastPurchased.has(event.product_id)) {
-      lastPurchased.set(event.product_id, event.created_at);
+    counts.set(conceptId, (counts.get(conceptId) || 0) + 1);
+    if (!lastPurchased.has(conceptId)) {
+      lastPurchased.set(conceptId, event.created_at);
     }
   }
 
-  for (const product of currentProducts) {
-    product.purchase_count_30d = counts.get(product.id) || 0;
-    product.last_purchased_at = lastPurchased.get(product.id) || null;
+  for (const concept of currentConcepts) {
+    concept.purchase_count_30d = counts.get(concept.id) || 0;
+    concept.last_purchased_at = lastPurchased.get(concept.id) || null;
   }
 
   renderStaples();
   renderFrequent();
 }
 
-function stockStateForProduct(productId) {
-  const item = currentItems.find(x => x.product_id === productId);
+function stockStateForConcept(conceptId) {
+  const item = currentItems.find(x => x.concept_id === conceptId);
   return item?.status || "out";
 }
 
@@ -2190,31 +2331,31 @@ function renderStaples() {
   const box = document.getElementById("stapleList");
   if (!box) return;
 
-  const staples = currentProducts
-    .filter(product => product.is_staple)
+  const staples = currentConcepts
+    .filter(concept => concept.is_staple)
     .sort((a, b) => a.name.localeCompare(b.name, "ja"));
 
   box.innerHTML = "";
 
   if (!staples.length) {
-    box.innerHTML = '<div class="insight-empty">まだ常備品はありません。在庫や「よく買うもの」から★を付けられます。</div>';
+    box.innerHTML = '<div class="insight-empty">まだ常備品はありません。</div>';
     return;
   }
 
-  for (const product of staples) {
-    const status = stockStateForProduct(product.id);
+  for (const concept of staples) {
+    const status = stockStateForConcept(concept.id);
     const div = document.createElement("div");
     div.className = "insight-item";
     div.innerHTML = `
       <div class="insight-head">
         <div>
-          <div class="insight-name">${escapeHtml(product.name)}</div>
-          <div class="insight-meta">直近30日 ${product.purchase_count_30d || 0}回購入</div>
+          <div class="insight-name">${escapeHtml(concept.name)}</div>
+          <div class="insight-meta">直近30日 ${concept.purchase_count_30d || 0}回購入</div>
         </div>
         <span class="insight-status ${status}">${stockStateLabel(status)}</span>
       </div>
       <div class="insight-actions">
-        <button onclick="setStaple('${product.id}', false)">★ 常備品を解除</button>
+        <button onclick="setStaple('${concept.id}', false)">★ 常備品を解除</button>
       </div>
     `;
     box.appendChild(div);
@@ -2225,8 +2366,8 @@ function renderFrequent() {
   const box = document.getElementById("frequentList");
   if (!box) return;
 
-  const frequent = currentProducts
-    .filter(product => (product.purchase_count_30d || 0) > 0)
+  const frequent = currentConcepts
+    .filter(concept => (concept.purchase_count_30d || 0) > 0)
     .sort((a, b) => {
       const countDiff = (b.purchase_count_30d || 0) - (a.purchase_count_30d || 0);
       if (countDiff) return countDiff;
@@ -2244,21 +2385,21 @@ function renderFrequent() {
     return;
   }
 
-  for (const product of frequent) {
-    const status = stockStateForProduct(product.id);
+  for (const concept of frequent) {
+    const status = stockStateForConcept(concept.id);
     const div = document.createElement("div");
     div.className = "insight-item";
     div.innerHTML = `
       <div class="insight-head">
         <div>
-          <div class="insight-name">${escapeHtml(product.name)}</div>
-          <div class="insight-meta">直近30日 ${product.purchase_count_30d}回購入</div>
+          <div class="insight-name">${escapeHtml(concept.name)}</div>
+          <div class="insight-meta">直近30日 ${concept.purchase_count_30d}回購入</div>
         </div>
         <span class="insight-status ${status}">${stockStateLabel(status)}</span>
       </div>
       <div class="insight-actions">
-        <button onclick="setStaple('${product.id}', ${product.is_staple ? 'false' : 'true'})">
-          ${product.is_staple ? '★ 常備品' : '☆ 常備品にする'}
+        <button onclick="setStaple('${concept.id}', ${concept.is_staple ? 'false' : 'true'})">
+          ${concept.is_staple ? '★ 常備品' : '☆ 常備品にする'}
         </button>
       </div>
     `;
@@ -2266,11 +2407,11 @@ function renderFrequent() {
   }
 }
 
-async function setStaple(productId, value) {
+async function setStaple(conceptId, value) {
   const { error } = await db
-    .from("products")
+    .from("food_concepts")
     .update({ is_staple: Boolean(value) })
-    .eq("id", productId)
+    .eq("id", conceptId)
     .eq("household_id", currentHousehold.id);
 
   if (error) return message(error.message, "error");
@@ -2283,6 +2424,10 @@ async function setStaple(productId, value) {
 async function loadItems() {
   if (!currentHousehold) return;
 
+  if (!currentConcepts.length) {
+    try { await refreshFoodConcepts(); } catch (err) { return message(err.message, "error"); }
+  }
+
   const { data, error } = await db
     .from("items")
     .select("*")
@@ -2290,7 +2435,16 @@ async function loadItems() {
     .order("created_at", { ascending: true });
 
   if (error) return message(error.message, "error");
-  currentItems = data || [];
+
+  currentItems = (data || []).map(item => {
+    const concept = item.concept_id ? currentConceptMap.get(item.concept_id) : null;
+    return {
+      ...item,
+      display_name: concept?.name || item.name,
+      display_storage: concept?.default_storage || item.storage
+    };
+  });
+
   renderItems(currentItems);
   renderStaples();
   renderFrequent();
@@ -2307,17 +2461,18 @@ function renderItems(items) {
   items.forEach(item => {
     const div = document.createElement("div");
     div.className = "item";
-    const janBadge = item.jan ? '<span class="badge">JAN</span>' : "";
+    const concept = item.concept_id ? currentConceptMap.get(item.concept_id) : null;
+    const name = item.display_name || item.name;
 
     div.innerHTML = `
-      <div class="item-name">${escapeHtml(item.name)} ${janBadge}</div>
-      <div class="item-meta">${storageNames[item.storage]}</div>
+      <div class="item-name">${escapeHtml(name)}</div>
+      <div class="item-meta">${storageNames[item.display_storage || item.storage] || ""}</div>
       <div class="status-buttons">
         <button class="${item.status === "in_stock" ? "active" : ""}" onclick="setStatus('${item.id}','in_stock')">ある</button>
         <button class="${item.status === "low" ? "active" : ""}" onclick="setStatus('${item.id}','low')">少ない</button>
         <button class="${item.status === "out" ? "active" : ""}" onclick="setStatus('${item.id}','out')">ない</button>
       </div>
-      ${item.product_id ? `<button class="staple-toggle" onclick="setStaple('${item.product_id}', ${currentProductMap.get(item.product_id)?.is_staple ? 'false' : 'true'})">${currentProductMap.get(item.product_id)?.is_staple ? '★ 常備品' : '☆ 常備品にする'}</button>` : ''}
+      ${concept ? `<button class="staple-toggle" onclick="setStaple('${concept.id}', ${concept.is_staple ? 'false' : 'true'})">${concept.is_staple ? '★ 常備品' : '☆ 常備品にする'}</button>` : ''}
       <button class="danger" onclick="deleteItem('${item.id}')">削除</button>
     `;
 
@@ -2326,7 +2481,9 @@ function renderItems(items) {
     if (item.status === "out" || item.status === "low") {
       const shop = document.createElement("div");
       shop.className = "item";
-      shop.textContent = item.status === "out" ? "🛒 " + item.name : "⚠️ " + item.name + "（少ない）";
+      shop.textContent = item.status === "out"
+        ? "🛒 " + name
+        : "⚠️ " + name + "（少ない）";
       shopping.appendChild(shop);
     }
   });
@@ -2341,8 +2498,6 @@ async function setStatus(id, status) {
   const { error } = await db.from("items").update({ status }).eq("id", id);
   if (error) return message(error.message, "error");
   await loadItems();
-  renderStaples();
-  renderFrequent();
 }
 
 async function deleteItem(id) {
@@ -2350,8 +2505,6 @@ async function deleteItem(id) {
   const { error } = await db.from("items").delete().eq("id", id);
   if (error) return message(error.message, "error");
   await loadItems();
-  renderStaples();
-  renderFrequent();
 }
 
 function startRealtime() {
@@ -2365,6 +2518,15 @@ function startRealtime() {
       table: "items",
       filter: "household_id=eq." + currentHousehold.id
     }, async () => {
+      await loadItems();
+    })
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "food_concepts",
+      filter: "household_id=eq." + currentHousehold.id
+    }, async () => {
+      await loadHouseholdInsights();
       await loadItems();
     })
     .on("postgres_changes", {
