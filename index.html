@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.9.1</title>
+<title>REIZO v0.9.3</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -84,15 +84,125 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .manual-input-panel{background:#f7f7f7;padding:12px;border-radius:12px;margin-top:10px}
 .manual-input-panel input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
 .helper-text{font-size:12px;color:#777;margin:6px 0 0}
+
+
+/* v0.9.3 settings */
+.topbar{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.menu-button{width:auto;min-width:46px;margin-top:4px;padding:10px 13px;font-size:22px;line-height:1;border:0;border-radius:12px;background:#fff;box-shadow:0 1px 5px rgba(0,0,0,.08)}
+.icon-button{width:auto;min-width:42px;margin:0;padding:8px 11px;font-size:22px;line-height:1;border:0;background:#f1f1f1;border-radius:10px}
+.menu-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:90}
+.side-menu{position:absolute;top:0;right:0;width:min(82vw,340px);height:100%;box-sizing:border-box;background:#fff;padding:20px;display:flex;flex-direction:column;box-shadow:-8px 0 30px rgba(0,0,0,.15)}
+.side-menu-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:5px 0 18px;border-bottom:1px solid #eee;margin-bottom:8px}
+.menu-profile-name{font-weight:800;font-size:18px}
+.menu-profile-handle{font-size:13px;color:#777;margin-top:4px}
+.menu-nav{text-align:left;background:transparent;border:0;border-radius:10px;padding:13px 10px;margin:2px 0;font-weight:650}
+.menu-nav:hover{background:#f5f5f5}
+.menu-spacer{flex:1}
+.danger-text{color:#a22}
+.settings-overlay{position:fixed;inset:0;z-index:100;background:#f6f6f6;overflow-y:auto}
+.settings-sheet{max-width:520px;margin:0 auto;padding:20px}
+.settings-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:14px}
+.settings-head h2{margin:2px 0 0}
+.settings-card{margin-bottom:14px}
+.field-label{display:block;font-size:13px;font-weight:700;color:#555;margin-top:14px}
+.readonly-field{background:#f5f5f5;border-radius:9px;padding:12px;margin-top:8px;color:#666;word-break:break-all}
+.handle-input-wrap{display:flex;align-items:center;gap:4px;margin-top:8px;border:1px solid #aaa;border-radius:3px;padding-left:12px;background:#fff}
+.handle-input-wrap span{color:#777;font-weight:700}
+.handle-input-wrap input{border:0;margin:0;padding-left:4px;outline:0}
+.settings-role-row{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#f7f7f7;padding:10px 12px;border-radius:10px;margin:10px 0}
+.muted-card{opacity:.72}
+.muted-card button:disabled{cursor:not-allowed;opacity:.55}
+
 </style>
 </head>
 
 <body>
 <main>
 
-<h1>REIZO</h1>
-<p class="sub">わが家の共有冷蔵庫</p>
+<div class="topbar">
+  <div>
+    <h1>REIZO</h1>
+    <p class="sub">わが家の共有冷蔵庫</p>
+  </div>
+  <button id="menuButton" class="menu-button hidden" onclick="openSideMenu()" aria-label="メニュー">☰</button>
+</div>
 <div id="message"></div>
+
+<div id="menuBackdrop" class="menu-backdrop hidden" onclick="closeSideMenu()">
+  <aside id="sideMenu" class="side-menu" onclick="event.stopPropagation()">
+    <div class="side-menu-head">
+      <div>
+        <div id="menuDisplayName" class="menu-profile-name">アカウント</div>
+        <div id="menuHandle" class="menu-profile-handle"></div>
+      </div>
+      <button class="icon-button" onclick="closeSideMenu()" aria-label="閉じる">×</button>
+    </div>
+
+    <button class="menu-nav" onclick="closeSideMenu()">冷蔵庫</button>
+    <button class="menu-nav" onclick="openSettings()">⚙ 設定</button>
+
+    <div class="menu-spacer"></div>
+    <button class="menu-nav danger-text" onclick="signOut()">ログアウト</button>
+  </aside>
+</div>
+
+<div id="settingsOverlay" class="settings-overlay hidden">
+  <div class="settings-sheet">
+    <div class="settings-head">
+      <div>
+        <div class="section-tag">REIZO</div>
+        <h2>設定</h2>
+      </div>
+      <button class="icon-button" onclick="closeSettings()" aria-label="閉じる">×</button>
+    </div>
+
+    <div class="card settings-card">
+      <div class="section-tag">プロフィール</div>
+      <h2>アカウント</h2>
+      <label class="field-label" for="settingsDisplayName">表示名</label>
+      <input id="settingsDisplayName" maxlength="40" placeholder="例：うく">
+
+      <label class="field-label" for="settingsHandle">ユーザーID</label>
+      <div class="handle-input-wrap">
+        <span>@</span>
+        <input id="settingsHandle" maxlength="24" autocapitalize="none" autocomplete="off" placeholder="例：uku0717">
+      </div>
+      <p class="helper-text">半角英小文字・数字・_ の3〜24文字。REIZO内部のUUIDとは別物です。</p>
+
+      <label class="field-label">メールアドレス</label>
+      <div id="settingsEmail" class="readonly-field"></div>
+
+      <button class="primary" onclick="saveProfileSettings()">プロフィールを保存</button>
+    </div>
+
+    <div class="card settings-card">
+      <div class="section-tag">共有</div>
+      <h2>家の設定</h2>
+      <div class="settings-role-row">
+        <span>あなたの権限</span>
+        <strong id="settingsRole">-</strong>
+      </div>
+      <label class="field-label" for="settingsHouseName">家の名前</label>
+      <input id="settingsHouseName" maxlength="50" placeholder="例：わが家">
+      <p id="houseNameHelp" class="helper-text"></p>
+      <button id="saveHouseNameButton" class="primary" onclick="saveHouseholdName()">家の名前を保存</button>
+    </div>
+
+    <div class="card settings-card muted-card">
+      <div class="section-tag">データ管理</div>
+      <h2>リセット・初期化</h2>
+      <p class="helper-text">在庫・購入履歴・学習データのリセットは、誤操作防止を含めて今後ここに追加します。</p>
+      <button disabled>準備中</button>
+    </div>
+
+    <div class="card settings-card muted-card">
+      <div class="section-tag">アカウント管理</div>
+      <h2>退会・削除</h2>
+      <p class="helper-text">家から抜ける、オーナー移譲、アカウント削除は安全な手順を整えてからここに追加します。</p>
+      <button disabled>準備中</button>
+    </div>
+  </div>
+</div>
 
 <section id="authView" class="card hidden">
 <h2>ログイン</h2>
@@ -301,12 +411,17 @@ let currentProducts = [];
 let currentProductMap = new Map();
 let currentConcepts = [];
 let currentConceptMap = new Map();
+let currentProfile = null;
+let currentUser = null;
+let currentMembershipRole = null;
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
     document.getElementById(x).classList.add("hidden");
   });
   document.getElementById(id).classList.remove("hidden");
+  const menuButton = document.getElementById("menuButton");
+  if (menuButton) menuButton.classList.toggle("hidden", id !== "appView");
 }
 
 function message(text, type = "") {
@@ -320,6 +435,138 @@ function escapeHtml(text) {
   const d = document.createElement("div");
   d.textContent = text;
   return d.innerHTML;
+}
+
+
+function openSideMenu() {
+  document.getElementById("menuBackdrop").classList.remove("hidden");
+}
+
+function closeSideMenu() {
+  document.getElementById("menuBackdrop").classList.add("hidden");
+}
+
+function openSettings() {
+  closeSideMenu();
+  refreshSettingsFields();
+  document.getElementById("settingsOverlay").classList.remove("hidden");
+}
+
+function closeSettings() {
+  document.getElementById("settingsOverlay").classList.add("hidden");
+}
+
+function defaultDisplayNameFromUser(user) {
+  const email = String(user?.email || "");
+  const prefix = email.split("@")[0].trim();
+  return prefix || "ユーザー";
+}
+
+function refreshProfileLabels() {
+  const display = currentProfile?.display_name || defaultDisplayNameFromUser(currentUser);
+  const handle = currentProfile?.handle ? "@" + currentProfile.handle : "";
+
+  const menuDisplay = document.getElementById("menuDisplayName");
+  const menuHandle = document.getElementById("menuHandle");
+  if (menuDisplay) menuDisplay.textContent = display;
+  if (menuHandle) menuHandle.textContent = handle;
+}
+
+function refreshSettingsFields() {
+  const displayInput = document.getElementById("settingsDisplayName");
+  const handleInput = document.getElementById("settingsHandle");
+  const emailBox = document.getElementById("settingsEmail");
+  const houseInput = document.getElementById("settingsHouseName");
+  const roleBox = document.getElementById("settingsRole");
+  const help = document.getElementById("houseNameHelp");
+  const saveButton = document.getElementById("saveHouseNameButton");
+
+  if (displayInput) displayInput.value = currentProfile?.display_name || defaultDisplayNameFromUser(currentUser);
+  if (handleInput) handleInput.value = currentProfile?.handle || "";
+  if (emailBox) emailBox.textContent = currentUser?.email || "";
+  if (houseInput) houseInput.value = currentHousehold?.name || "";
+
+  const isOwner = currentMembershipRole === "owner";
+  if (roleBox) roleBox.textContent = isOwner ? "オーナー" : "メンバー";
+  if (houseInput) houseInput.disabled = !isOwner;
+  if (saveButton) saveButton.disabled = !isOwner;
+  if (help) {
+    help.textContent = isOwner
+      ? "家の名前は共有メンバー全員に反映されます。"
+      : "家の名前を変更できるのはオーナーだけです。";
+  }
+}
+
+async function loadMyProfile() {
+  const { data: userData, error: userError } = await db.auth.getUser();
+  if (userError) throw userError;
+  currentUser = userData.user;
+
+  const { data: profile, error } = await db
+    .from("profiles")
+    .select("user_id,display_name,handle,created_at,updated_at")
+    .eq("user_id", currentUser.id)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (profile) {
+    currentProfile = profile;
+  } else {
+    const { data, error: createError } = await db.rpc("update_my_profile", {
+      p_display_name: defaultDisplayNameFromUser(currentUser),
+      p_handle: null
+    });
+    if (createError) throw createError;
+    currentProfile = data;
+  }
+
+  refreshProfileLabels();
+  refreshSettingsFields();
+}
+
+async function saveProfileSettings() {
+  const displayName = document.getElementById("settingsDisplayName").value.trim();
+  const handle = document.getElementById("settingsHandle").value.trim().toLowerCase();
+
+  if (!displayName) return message("表示名を入力してください", "error");
+  if (handle && !/^[a-z0-9_]{3,24}$/.test(handle)) {
+    return message("ユーザーIDは半角英小文字・数字・_ の3〜24文字で入力してください", "error");
+  }
+
+  const { data, error } = await db.rpc("update_my_profile", {
+    p_display_name: displayName,
+    p_handle: handle || null
+  });
+
+  if (error) return message(error.message, "error");
+
+  currentProfile = data;
+  refreshProfileLabels();
+  refreshSettingsFields();
+  message("✓ プロフィールを更新しました", "success");
+}
+
+async function saveHouseholdName() {
+  if (!currentHousehold) return;
+  if (currentMembershipRole !== "owner") {
+    return message("家の名前を変更できるのはオーナーだけです", "error");
+  }
+
+  const name = document.getElementById("settingsHouseName").value.trim();
+  if (!name) return message("家の名前を入力してください", "error");
+
+  const { data, error } = await db.rpc("update_household_name", {
+    p_household_id: currentHousehold.id,
+    p_name: name
+  });
+
+  if (error) return message(error.message, "error");
+
+  currentHousehold.name = data;
+  document.getElementById("householdName").textContent = data;
+  refreshSettingsFields();
+  message("✓ 家の名前を更新しました", "success");
 }
 
 async function signUp() {
@@ -360,6 +607,11 @@ async function signOut() {
     realtimeChannel = null;
   }
   currentHousehold = null;
+  currentProfile = null;
+  currentUser = null;
+  currentMembershipRole = null;
+  closeSideMenu();
+  closeSettings();
   await db.auth.signOut();
   message("");
   show("authView");
@@ -407,10 +659,30 @@ async function openHousehold(id) {
 
   if (error) return message(error.message, "error");
 
+  const { data: sessionData } = await db.auth.getSession();
+  currentUser = sessionData.session?.user || null;
+
+  const { data: membership, error: membershipError } = await db
+    .from("household_members")
+    .select("role")
+    .eq("household_id", id)
+    .eq("user_id", currentUser.id)
+    .single();
+
+  if (membershipError) return message(membershipError.message, "error");
+
+  currentMembershipRole = membership.role;
   currentHousehold = data;
   document.getElementById("householdName").textContent = data.name;
   document.getElementById("inviteCode").textContent = data.invite_code;
   show("appView");
+
+  try {
+    await loadMyProfile();
+  } catch (err) {
+    return message(err.message || String(err), "error");
+  }
+
   await loadHouseholdInsights();
   await loadItems();
   startRealtime();
@@ -2703,6 +2975,17 @@ function startRealtime() {
       filter: "household_id=eq." + currentHousehold.id
     }, async () => {
       await loadHouseholdInsights();
+    })
+    .on("postgres_changes", {
+      event: "UPDATE",
+      schema: "public",
+      table: "households",
+      filter: "id=eq." + currentHousehold.id
+    }, payload => {
+      if (!payload.new) return;
+      currentHousehold.name = payload.new.name;
+      document.getElementById("householdName").textContent = payload.new.name;
+      refreshSettingsFields();
     })
     .subscribe();
 }
