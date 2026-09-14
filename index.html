@@ -110,6 +110,10 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .handle-input-wrap span{color:#777;font-weight:700}
 .handle-input-wrap input{border:0;margin:0;padding-left:4px;outline:0}
 .settings-role-row{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#f7f7f7;padding:10px 12px;border-radius:10px;margin:10px 0}
+.settings-feedback{display:none;margin-top:10px;padding:10px 12px;border-radius:10px;font-size:13px;font-weight:700}
+.settings-feedback.show{display:block}
+.settings-feedback.success{background:#eef8ee;color:#245c24}
+.settings-feedback.error{background:#fff0f0;color:#8b2c2c}
 .muted-card{opacity:.72}
 .muted-card button:disabled{cursor:not-allowed;opacity:.55}
 
@@ -173,6 +177,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
       <div id="settingsEmail" class="readonly-field"></div>
 
       <button class="primary" onclick="saveProfileSettings()">プロフィールを保存</button>
+<div id="profileSettingsMessage" class="settings-feedback" role="status" aria-live="polite"></div>
     </div>
 
     <div class="card settings-card">
@@ -186,6 +191,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
       <input id="settingsHouseName" maxlength="50" placeholder="例：わが家">
       <p id="houseNameHelp" class="helper-text"></p>
       <button id="saveHouseNameButton" class="primary" onclick="saveHouseholdName()">家の名前を保存</button>
+<div id="houseSettingsMessage" class="settings-feedback" role="status" aria-live="polite"></div>
     </div>
 
     <div class="card settings-card muted-card">
@@ -431,6 +437,29 @@ function message(text, type = "") {
   if (type) el.classList.add(type);
 }
 
+
+function settingsFeedback(target, text, type = "") {
+  const id = target === "house"
+    ? "houseSettingsMessage"
+    : "profileSettingsMessage";
+
+  const el = document.getElementById(id);
+  if (!el) return;
+
+  el.textContent = text || "";
+  el.className = "settings-feedback";
+
+  if (text) {
+    el.classList.add("show");
+    if (type) el.classList.add(type);
+  }
+}
+
+function clearSettingsFeedback() {
+  settingsFeedback("profile", "");
+  settingsFeedback("house", "");
+}
+
 function escapeHtml(text) {
   const d = document.createElement("div");
   d.textContent = text;
@@ -449,6 +478,7 @@ function closeSideMenu() {
 function openSettings() {
   closeSideMenu();
   refreshSettingsFields();
+  clearSettingsFeedback();
   document.getElementById("settingsOverlay").classList.remove("hidden");
 }
 
@@ -526,12 +556,21 @@ async function loadMyProfile() {
 }
 
 async function saveProfileSettings() {
+  settingsFeedback("profile", "");
+
   const displayName = document.getElementById("settingsDisplayName").value.trim();
   const handle = document.getElementById("settingsHandle").value.trim().toLowerCase();
 
-  if (!displayName) return message("表示名を入力してください", "error");
+  if (!displayName) {
+    return settingsFeedback("profile", "表示名を入力してください", "error");
+  }
+
   if (handle && !/^[a-z0-9_]{3,24}$/.test(handle)) {
-    return message("ユーザーIDは半角英小文字・数字・_ の3〜24文字で入力してください", "error");
+    return settingsFeedback(
+      "profile",
+      "ユーザーIDは半角英小文字・数字・_ の3〜24文字で入力してください",
+      "error"
+    );
   }
 
   const { data, error } = await db.rpc("update_my_profile", {
@@ -539,34 +578,48 @@ async function saveProfileSettings() {
     p_handle: handle || null
   });
 
-  if (error) return message(error.message, "error");
+  if (error) {
+    return settingsFeedback("profile", error.message, "error");
+  }
 
   currentProfile = data;
   refreshProfileLabels();
   refreshSettingsFields();
-  message("✓ プロフィールを更新しました", "success");
+  settingsFeedback("profile", "✓ プロフィールを更新しました", "success");
 }
 
 async function saveHouseholdName() {
+  settingsFeedback("house", "");
+
   if (!currentHousehold) return;
+
   if (currentMembershipRole !== "owner") {
-    return message("家の名前を変更できるのはオーナーだけです", "error");
+    return settingsFeedback(
+      "house",
+      "家の名前を変更できるのはオーナーだけです",
+      "error"
+    );
   }
 
   const name = document.getElementById("settingsHouseName").value.trim();
-  if (!name) return message("家の名前を入力してください", "error");
+
+  if (!name) {
+    return settingsFeedback("house", "家の名前を入力してください", "error");
+  }
 
   const { data, error } = await db.rpc("update_household_name", {
     p_household_id: currentHousehold.id,
     p_name: name
   });
 
-  if (error) return message(error.message, "error");
+  if (error) {
+    return settingsFeedback("house", error.message, "error");
+  }
 
   currentHousehold.name = data;
   document.getElementById("householdName").textContent = data;
   refreshSettingsFields();
-  message("✓ 家の名前を更新しました", "success");
+  settingsFeedback("house", "✓ 家の名前を更新しました", "success");
 }
 
 async function signUp() {
