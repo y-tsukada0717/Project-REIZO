@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.9</title>
+<title>REIZO v0.9.1</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -79,6 +79,11 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .insight-empty{color:#777;font-size:14px;padding:8px 0}
 .staple-toggle{font-size:13px;padding:8px 10px;margin-top:8px}
 .dashboard-note{font-size:13px;color:#666;margin-top:-2px}
+.input-choice{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.input-choice button{margin-top:0}
+.manual-input-panel{background:#f7f7f7;padding:12px;border-radius:12px;margin-top:10px}
+.manual-input-panel input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
+.helper-text{font-size:12px;color:#777;margin:6px 0 0}
 </style>
 </head>
 
@@ -136,8 +141,17 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 <div class="card">
 <div class="section-tag">JAN入庫</div>
 <h2>商品を入庫</h2>
+<div class="input-choice">
 <button class="scan-button" onclick="startScanner()">📷 JANをスキャン</button>
-<p class="scan-help">商品のバーコードをカメラに映してください。</p>
+<button class="scan-button" onclick="toggleManualJanPanel()">⌨ JANを入力</button>
+</div>
+<p class="scan-help">ふだんはカメラで。JANが分かっているときは直接入力もできます。</p>
+<div id="manualJanPanel" class="manual-input-panel hidden">
+<input id="manualJanInput" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="JANコード（8・12・13桁）" onkeydown="if(event.key==='Enter'){submitManualJan()}">
+<p class="helper-text">ハイフンや空白は自動で除き、チェックデジットも確認します。</p>
+<button class="primary" onclick="submitManualJan()">JANを確認</button>
+<button onclick="closeManualJanPanel()">閉じる</button>
+</div>
 <div id="scannerArea" class="hidden">
 <div id="reader"></div>
 <button onclick="stopScanner()">スキャンを閉じる</button>
@@ -161,9 +175,14 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 
 <div class="card">
 <h2>🧾 レシートから追加</h2>
-<p class="receipt-help">レシートを撮ると、買ったものをまとめて確認できます。</p>
+<p class="receipt-help">その場で撮影しても、すでに撮ったレシート画像を選んでもOKです。</p>
 
-<input id="receiptFile" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged()">
+<div class="input-choice">
+<button class="primary" onclick="chooseReceiptCamera()">📷 レシートを撮る</button>
+<button onclick="chooseReceiptFile()">🖼 写真 / ファイルから選ぶ</button>
+</div>
+<input id="receiptCameraInput" class="hidden" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged('receiptCameraInput')">
+<input id="receiptFileInput" class="hidden" type="file" accept="image/*" onchange="receiptFileChanged('receiptFileInput')">
 
 <div id="originalPreviewArea" class="hidden">
 <div class="process-title">送信するレシート画像</div>
@@ -176,6 +195,15 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 <div class="process-title">未知商品のJANをスキャン</div>
 <div id="receiptReader"></div>
 <button onclick="stopReceiptScanner()">スキャンを閉じる</button>
+</div>
+
+<div id="receiptManualJanPanel" class="receipt-link-panel hidden">
+<div class="process-title">JANを直接入力</div>
+<div id="receiptManualJanTarget" class="receipt-help"></div>
+<input id="receiptManualJanInput" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="JANコード（8・12・13桁）" onkeydown="if(event.key==='Enter'){submitReceiptManualJan()}">
+<p class="helper-text">検索して分かったJANを貼り付けてもOKです。</p>
+<button class="primary" onclick="submitReceiptManualJan()">このJANで登録</button>
+<button onclick="cancelReceiptManualJan()">キャンセル</button>
 </div>
 
 <div id="receiptLinkForm" class="receipt-link-panel hidden">
@@ -258,6 +286,8 @@ let scannerRunning = false;
 let scanLock = false;
 let pendingJan = null;
 let receiptPreviewUrl = null;
+let selectedReceiptFile = null;
+let pendingReceiptManualIndex = null;
 let receiptScanner = null;
 let receiptScannerRunning = false;
 let analyzedReceipt = null;
@@ -384,6 +414,60 @@ async function openHousehold(id) {
   await loadHouseholdInsights();
   await loadItems();
   startRealtime();
+}
+
+function normalizeJanInput(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\s\-‐‑‒–—―]+/g, "")
+    .trim();
+}
+
+function validateJan(value) {
+  const jan = normalizeJanInput(value);
+  if (!/^\d+$/.test(jan)) {
+    return { ok: false, jan, error: "JANは数字だけで入力してください" };
+  }
+  if (![8, 12, 13].includes(jan.length)) {
+    return { ok: false, jan, error: "JANは8桁・12桁・13桁のいずれかで入力してください" };
+  }
+
+  const digits = jan.split("").map(Number);
+  const check = digits.pop();
+  let sum = 0;
+  let weight = 3;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    sum += digits[i] * weight;
+    weight = weight === 3 ? 1 : 3;
+  }
+  const expected = (10 - (sum % 10)) % 10;
+  if (check !== expected) {
+    return { ok: false, jan, error: "JANのチェックデジットが一致しません。入力を確認してください" };
+  }
+  return { ok: true, jan, error: null };
+}
+
+function toggleManualJanPanel() {
+  const panel = document.getElementById("manualJanPanel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    document.getElementById("manualJanInput").focus();
+  }
+}
+
+function closeManualJanPanel() {
+  document.getElementById("manualJanPanel").classList.add("hidden");
+}
+
+async function submitManualJan() {
+  const input = document.getElementById("manualJanInput");
+  const result = validateJan(input.value);
+  if (!result.ok) return message(result.error, "error");
+
+  input.value = result.jan;
+  closeManualJanPanel();
+  scanLock = true;
+  await handleJan(result.jan);
 }
 
 async function startScanner() {
@@ -713,8 +797,20 @@ async function putProductInStock(product, householdName = null) {
    v0.4 Google Cloud Vision OCR
    ========================================= */
 
-function receiptFileChanged() {
-  const input = document.getElementById("receiptFile");
+function chooseReceiptCamera() {
+  const input = document.getElementById("receiptCameraInput");
+  input.value = "";
+  input.click();
+}
+
+function chooseReceiptFile() {
+  const input = document.getElementById("receiptFileInput");
+  input.value = "";
+  input.click();
+}
+
+function receiptFileChanged(inputId) {
+  const input = document.getElementById(inputId);
   const preview = document.getElementById("receiptPreview");
 
   document.getElementById("ocrResultArea").classList.add("hidden");
@@ -726,6 +822,8 @@ function receiptFileChanged() {
   document.getElementById("receiptLearningSummary").textContent = "";
   document.getElementById("bulkStockButton").classList.add("hidden");
   document.getElementById("receiptLinkForm").classList.add("hidden");
+  document.getElementById("receiptManualJanPanel").classList.add("hidden");
+  pendingReceiptManualIndex = null;
   document.getElementById("receiptScannerArea").classList.add("hidden");
   analyzedReceipt = null;
   receiptMatches = [];
@@ -740,12 +838,18 @@ function receiptFileChanged() {
   }
 
   if (!input.files || !input.files[0]) {
+    selectedReceiptFile = null;
     document.getElementById("originalPreviewArea").classList.add("hidden");
     preview.removeAttribute("src");
     return;
   }
 
-  receiptPreviewUrl = URL.createObjectURL(input.files[0]);
+  selectedReceiptFile = input.files[0];
+  const otherId = inputId === "receiptCameraInput" ? "receiptFileInput" : "receiptCameraInput";
+  const otherInput = document.getElementById(otherId);
+  if (otherInput) otherInput.value = "";
+
+  receiptPreviewUrl = URL.createObjectURL(selectedReceiptFile);
   preview.src = receiptPreviewUrl;
   document.getElementById("originalPreviewArea").classList.remove("hidden");
   message("");
@@ -1779,6 +1883,7 @@ function renderReceiptLearning() {
       actionsHtml = `
         <div class="receipt-actions">
           <button onclick="startReceiptScanner(${index})">📷 JANをスキャン</button>
+          <button onclick="openReceiptManualJan(${index})">⌨ JANを入力</button>
           <button onclick="openReceiptLinkForm(${index}, null)">JANなしで登録</button>
           <button onclick="skipReceiptItem(${index})">今回は追加しない</button>
         </div>`;
@@ -1807,6 +1912,45 @@ function renderReceiptLearning() {
   }
 }
 
+function openReceiptManualJan(index) {
+  const entry = receiptMatches[index];
+  if (!entry) return;
+
+  pendingReceiptManualIndex = index;
+  const name = String(
+    currentConceptMap.get(entry.product?.concept_id)?.name ||
+    entry.item?.household_name ||
+    entry.item?.normalized_name ||
+    entry.item?.receipt_name ||
+    "この商品"
+  );
+
+  document.getElementById("receiptManualJanTarget").textContent = name;
+  document.getElementById("receiptManualJanInput").value = "";
+  document.getElementById("receiptManualJanPanel").classList.remove("hidden");
+  document.getElementById("receiptLinkForm").classList.add("hidden");
+  document.getElementById("receiptManualJanInput").focus();
+  document.getElementById("receiptManualJanPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function cancelReceiptManualJan() {
+  pendingReceiptManualIndex = null;
+  document.getElementById("receiptManualJanPanel").classList.add("hidden");
+}
+
+async function submitReceiptManualJan() {
+  if (pendingReceiptManualIndex === null) return;
+  const index = pendingReceiptManualIndex;
+  const input = document.getElementById("receiptManualJanInput");
+  const result = validateJan(input.value);
+  if (!result.ok) return message(result.error, "error");
+
+  input.value = result.jan;
+  pendingReceiptManualIndex = null;
+  document.getElementById("receiptManualJanPanel").classList.add("hidden");
+  await handleReceiptJan(index, result.jan);
+}
+
 async function startReceiptScanner(index) {
   await stopScanner();
   await stopReceiptScanner();
@@ -1815,6 +1959,8 @@ async function startReceiptScanner(index) {
   const area = document.getElementById("receiptScannerArea");
   area.classList.remove("hidden");
   document.getElementById("receiptLinkForm").classList.add("hidden");
+  document.getElementById("receiptManualJanPanel").classList.add("hidden");
+  pendingReceiptManualIndex = null;
 
   try {
     receiptScanner = new Html5Qrcode("receiptReader", {
@@ -1893,6 +2039,8 @@ function openReceiptLinkForm(index, jan) {
   document.getElementById("receiptLinkJan").textContent = jan ? ("JAN: " + jan) : "JANなし商品として登録";
   document.getElementById("receiptLinkProductName").value = name;
   document.getElementById("receiptLinkStorage").value = "fridge";
+  document.getElementById("receiptManualJanPanel").classList.add("hidden");
+  pendingReceiptManualIndex = null;
   document.getElementById("receiptLinkForm").classList.remove("hidden");
   document.getElementById("receiptLinkForm").scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -2058,7 +2206,6 @@ function toggleRawOcr() {
 }
 
 async function runReceiptOcr() {
-  const input = document.getElementById("receiptFile");
   const button = document.getElementById("ocrButton");
   const resultArea = document.getElementById("ocrResultArea");
   const resultBox = document.getElementById("ocrResult");
@@ -2066,8 +2213,8 @@ async function runReceiptOcr() {
   const fill = document.getElementById("ocrProgressFill");
   const status = document.getElementById("ocrStatus");
 
-  if (!input.files || !input.files[0]) {
-    return message("先にレシートを撮影するか、写真を選んでください。", "error");
+  if (!selectedReceiptFile) {
+    return message("先にレシートを撮影するか、写真 / ファイルから選んでください。", "error");
   }
 
   button.disabled = true;
@@ -2094,7 +2241,7 @@ async function runReceiptOcr() {
 
   try {
     // 1. Google Vision OCR
-    const imageBase64 = await imageFileToBase64(input.files[0]);
+    const imageBase64 = await imageFileToBase64(selectedReceiptFile);
 
     fill.style.width = "35%";
     status.textContent = "Google Visionが文字を読み取っています…";
@@ -2220,6 +2367,8 @@ async function clearReceiptOcr() {
   currentOcrText = "";
   currentReceiptAnalysisMode = null;
   document.getElementById("receiptLinkForm").classList.add("hidden");
+  document.getElementById("receiptManualJanPanel").classList.add("hidden");
+  pendingReceiptManualIndex = null;
   document.getElementById("receiptLearningSummary").textContent = "";
   document.getElementById("bulkStockButton").classList.add("hidden");
   document.getElementById("ocrResult").value = "";
@@ -2230,6 +2379,15 @@ async function clearReceiptOcr() {
   document.getElementById("ocrResultArea").classList.add("hidden");
   document.getElementById("ocrProgressWrap").classList.add("hidden");
   document.getElementById("ocrProgressFill").style.width = "0%";
+  selectedReceiptFile = null;
+  document.getElementById("receiptCameraInput").value = "";
+  document.getElementById("receiptFileInput").value = "";
+  document.getElementById("originalPreviewArea").classList.add("hidden");
+  document.getElementById("receiptPreview").removeAttribute("src");
+  if (receiptPreviewUrl) {
+    URL.revokeObjectURL(receiptPreviewUrl);
+    receiptPreviewUrl = null;
+  }
   message("");
 }
 
