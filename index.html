@@ -114,6 +114,19 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .settings-feedback.show{display:block}
 .settings-feedback.success{background:#eef8ee;color:#245c24}
 .settings-feedback.error{background:#fff0f0;color:#8b2c2c}
+.danger-zone{border:1px solid #ead2d2}
+.danger-action{padding:12px 0;border-top:1px solid #eee}
+.danger-action:first-of-type{border-top:0}
+.danger-action strong{display:block;margin-bottom:4px}
+.danger-action p{margin:0 0 8px;color:#666;font-size:13px;line-height:1.55}
+.danger-button{background:#fff;border:1px solid #c94b4b;color:#9d2828;font-weight:700}
+.danger-button:hover{background:#fff5f5}
+.member-list{margin:10px 0 14px}
+.member-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-top:8px}
+.member-name{font-weight:700}
+.member-sub{font-size:12px;color:#777;margin-top:2px}
+.member-role{font-size:12px;font-weight:700;padding:4px 8px;border-radius:999px;background:#eaeaea;white-space:nowrap}
+.owner-tools{margin-top:10px;padding-top:10px;border-top:1px solid #eee}
 .muted-card{opacity:.72}
 .muted-card button:disabled{cursor:not-allowed;opacity:.55}
 
@@ -194,18 +207,59 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 <div id="houseSettingsMessage" class="settings-feedback" role="status" aria-live="polite"></div>
     </div>
 
-    <div class="card settings-card muted-card">
+    <div class="card settings-card danger-zone">
       <div class="section-tag">データ管理</div>
       <h2>リセット・初期化</h2>
-      <p class="helper-text">在庫・購入履歴・学習データのリセットは、誤操作防止を含めて今後ここに追加します。</p>
-      <button disabled>準備中</button>
+      <p class="helper-text">ここでの操作は、この家を共有しているメンバー全員に影響します。オーナーだけが実行できます。</p>
+
+      <div class="danger-action">
+        <strong>現在庫をリセット</strong>
+        <p>「ある / 少ない / ない」の現在庫一覧を空にします。JAN学習・商品知識・購入履歴・常備品設定は残ります。</p>
+        <button id="resetInventoryButton" class="danger-button" onclick="resetHouseholdInventory()">現在庫をリセット</button>
+      </div>
+
+      <div class="danger-action">
+        <strong>購入履歴をリセット</strong>
+        <p>購入履歴を削除し、「よく買うもの」の集計をゼロからやり直します。現在庫・JAN学習・商品知識は残ります。</p>
+        <button id="resetHistoryButton" class="danger-button" onclick="resetPurchaseHistory()">購入履歴をリセット</button>
+      </div>
+
+      <div id="dataSettingsMessage" class="settings-feedback" role="status" aria-live="polite"></div>
     </div>
 
-    <div class="card settings-card muted-card">
+    <div class="card settings-card danger-zone">
       <div class="section-tag">アカウント管理</div>
-      <h2>退会・削除</h2>
-      <p class="helper-text">家から抜ける、オーナー移譲、アカウント削除は安全な手順を整えてからここに追加します。</p>
-      <button disabled>準備中</button>
+      <h2>家・メンバー・アカウント</h2>
+
+      <div class="field-label">この家のメンバー</div>
+      <div id="settingsMemberList" class="member-list"></div>
+
+      <div id="ownerTransferBox" class="owner-tools hidden">
+        <label class="field-label" for="ownerTransferSelect">オーナーを移譲</label>
+        <select id="ownerTransferSelect"></select>
+        <p class="helper-text">移譲すると、あなたは通常メンバーになります。</p>
+        <button onclick="transferHouseholdOwner()">選んだメンバーにオーナーを移譲</button>
+      </div>
+
+      <div class="danger-action">
+        <strong>この家から抜ける</strong>
+        <p>あなたのアカウントだけがこの家から外れます。家の在庫や学習データは削除されません。唯一のオーナーは、そのままでは退出できません。</p>
+        <button class="danger-button" onclick="leaveCurrentHousehold()">この家から抜ける</button>
+      </div>
+
+      <div id="deleteHouseholdAction" class="danger-action hidden">
+        <strong>この家を削除</strong>
+        <p>この家に属する在庫・購入履歴・商品学習・メンバー情報をすべて削除します。アカウント自体は残ります。</p>
+        <button class="danger-button" onclick="deleteCurrentHousehold()">この家を完全に削除</button>
+      </div>
+
+      <div class="danger-action">
+        <strong>REIZOアカウントを削除</strong>
+        <p>プロフィールとログインアカウントを削除します。あなたが唯一のオーナーになっている家がある場合は、先にオーナー移譲または家の削除が必要です。</p>
+        <button class="danger-button" onclick="deleteMyAccount()">アカウントを削除</button>
+      </div>
+
+      <div id="accountSettingsMessage" class="settings-feedback" role="status" aria-live="polite"></div>
     </div>
   </div>
 </div>
@@ -420,6 +474,7 @@ let currentConceptMap = new Map();
 let currentProfile = null;
 let currentUser = null;
 let currentMembershipRole = null;
+let currentHouseholdMembers = [];
 
 function show(id) {
   ["authView","householdView","appView"].forEach(x => {
@@ -439,11 +494,14 @@ function message(text, type = "") {
 
 
 function settingsFeedback(target, text, type = "") {
-  const id = target === "house"
-    ? "houseSettingsMessage"
-    : "profileSettingsMessage";
+  const ids = {
+    profile: "profileSettingsMessage",
+    house: "houseSettingsMessage",
+    data: "dataSettingsMessage",
+    account: "accountSettingsMessage"
+  };
 
-  const el = document.getElementById(id);
+  const el = document.getElementById(ids[target] || ids.profile);
   if (!el) return;
 
   el.textContent = text || "";
@@ -456,8 +514,7 @@ function settingsFeedback(target, text, type = "") {
 }
 
 function clearSettingsFeedback() {
-  settingsFeedback("profile", "");
-  settingsFeedback("house", "");
+  ["profile", "house", "data", "account"].forEach(x => settingsFeedback(x, ""));
 }
 
 function escapeHtml(text) {
@@ -475,11 +532,17 @@ function closeSideMenu() {
   document.getElementById("menuBackdrop").classList.add("hidden");
 }
 
-function openSettings() {
+async function openSettings() {
   closeSideMenu();
   refreshSettingsFields();
   clearSettingsFeedback();
   document.getElementById("settingsOverlay").classList.remove("hidden");
+
+  try {
+    await refreshHouseholdMembers();
+  } catch (err) {
+    settingsFeedback("account", err?.message || String(err), "error");
+  }
 }
 
 function closeSettings() {
@@ -525,6 +588,16 @@ function refreshSettingsFields() {
       ? "家の名前は共有メンバー全員に反映されます。"
       : "家の名前を変更できるのはオーナーだけです。";
   }
+
+  const resetInventoryButton = document.getElementById("resetInventoryButton");
+  const resetHistoryButton = document.getElementById("resetHistoryButton");
+  const deleteHouseholdAction = document.getElementById("deleteHouseholdAction");
+
+  if (resetInventoryButton) resetInventoryButton.disabled = !isOwner;
+  if (resetHistoryButton) resetHistoryButton.disabled = !isOwner;
+  if (deleteHouseholdAction) deleteHouseholdAction.classList.toggle("hidden", !isOwner);
+
+  renderOwnerTransferControls();
 }
 
 async function loadMyProfile() {
@@ -621,6 +694,299 @@ async function saveHouseholdName() {
   refreshSettingsFields();
   settingsFeedback("house", "✓ 家の名前を更新しました", "success");
 }
+
+
+async function refreshHouseholdMembers() {
+  if (!currentHousehold) return;
+
+  const { data, error } = await db.rpc("list_household_members", {
+    p_household_id: currentHousehold.id
+  });
+
+  if (error) throw error;
+
+  currentHouseholdMembers = data || [];
+  renderHouseholdMembers();
+  renderOwnerTransferControls();
+}
+
+function renderHouseholdMembers() {
+  const box = document.getElementById("settingsMemberList");
+  if (!box) return;
+
+  box.innerHTML = "";
+
+  if (!currentHouseholdMembers.length) {
+    box.textContent = "メンバー情報を取得できませんでした";
+    return;
+  }
+
+  for (const member of currentHouseholdMembers) {
+    const row = document.createElement("div");
+    row.className = "member-row";
+
+    const handle = member.handle ? "@" + member.handle : "";
+    const me = member.is_me ? "（あなた）" : "";
+
+    row.innerHTML = `
+      <div>
+        <div class="member-name">${escapeHtml(member.display_name || "ユーザー")}${me}</div>
+        ${handle ? `<div class="member-sub">${escapeHtml(handle)}</div>` : ""}
+      </div>
+      <div class="member-role">${member.role === "owner" ? "オーナー" : "メンバー"}</div>
+    `;
+
+    box.appendChild(row);
+  }
+}
+
+function renderOwnerTransferControls() {
+  const box = document.getElementById("ownerTransferBox");
+  const select = document.getElementById("ownerTransferSelect");
+  if (!box || !select) return;
+
+  const isOwner = currentMembershipRole === "owner";
+  const others = currentHouseholdMembers.filter(x => !x.is_me);
+
+  box.classList.toggle("hidden", !isOwner || !others.length);
+  select.innerHTML = "";
+
+  if (!isOwner || !others.length) return;
+
+  for (const member of others) {
+    const option = document.createElement("option");
+    option.value = member.user_id;
+    option.textContent =
+      (member.display_name || "ユーザー") +
+      (member.handle ? ` (@${member.handle})` : "");
+    select.appendChild(option);
+  }
+}
+
+async function resetHouseholdInventory() {
+  settingsFeedback("data", "");
+
+  if (currentMembershipRole !== "owner") {
+    return settingsFeedback("data", "現在庫をリセットできるのはオーナーだけです", "error");
+  }
+
+  if (!confirm(
+    "現在庫をすべて空にしますか？\\n\\nJAN学習・商品知識・購入履歴・常備品設定は残ります。"
+  )) return;
+
+  const { data, error } = await db.rpc("reset_household_inventory", {
+    p_household_id: currentHousehold.id
+  });
+
+  if (error) {
+    return settingsFeedback("data", error.message, "error");
+  }
+
+  await loadHouseholdInsights();
+  await loadItems();
+
+  settingsFeedback(
+    "data",
+    `✓ 現在庫をリセットしました（${Number(data || 0)}件）`,
+    "success"
+  );
+}
+
+async function resetPurchaseHistory() {
+  settingsFeedback("data", "");
+
+  if (currentMembershipRole !== "owner") {
+    return settingsFeedback("data", "購入履歴をリセットできるのはオーナーだけです", "error");
+  }
+
+  const phrase = prompt(
+    "購入履歴をすべて削除します。\\n「履歴削除」と入力すると実行します。"
+  );
+
+  if (phrase === null) return;
+
+  if (phrase !== "履歴削除") {
+    return settingsFeedback("data", "確認文字が一致しないため中止しました", "error");
+  }
+
+  const { data, error } = await db.rpc("reset_purchase_history", {
+    p_household_id: currentHousehold.id
+  });
+
+  if (error) {
+    return settingsFeedback("data", error.message, "error");
+  }
+
+  await loadHouseholdInsights();
+
+  settingsFeedback(
+    "data",
+    `✓ 購入履歴をリセットしました（${Number(data || 0)}件の買い物履歴）`,
+    "success"
+  );
+}
+
+async function transferHouseholdOwner() {
+  settingsFeedback("account", "");
+
+  if (currentMembershipRole !== "owner") {
+    return settingsFeedback("account", "オーナー移譲を実行できるのはオーナーだけです", "error");
+  }
+
+  const select = document.getElementById("ownerTransferSelect");
+  const targetUserId = select?.value;
+
+  if (!targetUserId) {
+    return settingsFeedback("account", "移譲先のメンバーを選んでください", "error");
+  }
+
+  const target = currentHouseholdMembers.find(x => x.user_id === targetUserId);
+  const targetName = target?.display_name || "選択したメンバー";
+
+  if (!confirm(
+    `${targetName} にオーナーを移譲しますか？\\n\\n移譲後、あなたは通常メンバーになります。`
+  )) return;
+
+  const { error } = await db.rpc("transfer_household_owner", {
+    p_household_id: currentHousehold.id,
+    p_new_owner_user_id: targetUserId
+  });
+
+  if (error) {
+    return settingsFeedback("account", error.message, "error");
+  }
+
+  currentMembershipRole = "member";
+  await refreshHouseholdMembers();
+  refreshSettingsFields();
+
+  settingsFeedback("account", `✓ ${targetName} にオーナーを移譲しました`, "success");
+}
+
+async function leaveCurrentHousehold() {
+  settingsFeedback("account", "");
+
+  if (!currentHousehold) return;
+
+  if (!confirm(
+    `「${currentHousehold.name}」から抜けますか？\\n\\n家のデータは残り、あなたの所属だけが解除されます。`
+  )) return;
+
+  const { error } = await db.rpc("leave_household", {
+    p_household_id: currentHousehold.id
+  });
+
+  if (error) {
+    return settingsFeedback("account", error.message, "error");
+  }
+
+  if (realtimeChannel) {
+    await db.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+  }
+
+  currentHousehold = null;
+  currentMembershipRole = null;
+  currentHouseholdMembers = [];
+  closeSettings();
+  message("");
+  await boot();
+}
+
+async function deleteCurrentHousehold() {
+  settingsFeedback("account", "");
+
+  if (currentMembershipRole !== "owner") {
+    return settingsFeedback("account", "家を削除できるのはオーナーだけです", "error");
+  }
+
+  const expected = currentHousehold?.name || "";
+  const typed = prompt(
+    `この家の在庫・履歴・学習データをすべて削除します。\\n\\n確認のため家の名前「${expected}」を入力してください。`
+  );
+
+  if (typed === null) return;
+
+  if (typed !== expected) {
+    return settingsFeedback("account", "家の名前が一致しないため中止しました", "error");
+  }
+
+  const { error } = await db.rpc("delete_household", {
+    p_household_id: currentHousehold.id,
+    p_confirmation_name: typed
+  });
+
+  if (error) {
+    return settingsFeedback("account", error.message, "error");
+  }
+
+  if (realtimeChannel) {
+    await db.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+  }
+
+  currentHousehold = null;
+  currentMembershipRole = null;
+  currentHouseholdMembers = [];
+  closeSettings();
+  message("");
+  await boot();
+}
+
+async function deleteMyAccount() {
+  settingsFeedback("account", "");
+
+  const phrase = prompt(
+    "REIZOアカウントを削除します。\\nこの操作は元に戻せません。\\n\\n「アカウント削除」と入力すると実行します。"
+  );
+
+  if (phrase === null) return;
+
+  if (phrase !== "アカウント削除") {
+    return settingsFeedback("account", "確認文字が一致しないため中止しました", "error");
+  }
+
+  const { data, error } = await db.functions.invoke("delete-account", {
+    body: {}
+  });
+
+  if (error) {
+    return settingsFeedback(
+      "account",
+      "アカウント削除処理に失敗しました。時間を置いてもう一度試してください。",
+      "error"
+    );
+  }
+
+  if (!data?.ok) {
+    return settingsFeedback(
+      "account",
+      data?.error || "アカウントを削除できませんでした",
+      "error"
+    );
+  }
+
+  try {
+    await db.auth.signOut({ scope: "local" });
+  } catch (_) {}
+
+  if (realtimeChannel) {
+    try { await db.removeChannel(realtimeChannel); } catch (_) {}
+    realtimeChannel = null;
+  }
+
+  currentHousehold = null;
+  currentProfile = null;
+  currentUser = null;
+  currentMembershipRole = null;
+  currentHouseholdMembers = [];
+
+  closeSettings();
+  closeSideMenu();
+  show("authView");
+  message("アカウントを削除しました", "success");
+}
+
 
 async function signUp() {
   message("");
