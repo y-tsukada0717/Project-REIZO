@@ -442,8 +442,8 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
    ★ここだけ、今使っている自分の値に変更
    ========================================= */
 
-const SUPABASE_URL = "https://faavfjrkdgnufhpqjkks.supabase.co";
-const SUPABASE_KEY = "sb_publishable_YNdPWnNeuENGqHlUO1iwCQ_pdbaqpe9";
+const SUPABASE_URL = "ここにProject URL";
+const SUPABASE_KEY = "ここにsb_publishable_から始まるキー";
 
 /* ========================================= */
 
@@ -2255,6 +2255,41 @@ async function loadReceiptMemory() {
   return aliases
     .map(alias => ({ ...alias, product: productMap.get(alias.product_id) || null }))
     .filter(alias => alias.product);
+}
+
+function receiptLines(text) {
+  return String(text || "")
+    .normalize("NFKC")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+function findReceiptProductWindow(text) {
+  const lines = receiptLines(text);
+  if (!lines.length) return [];
+
+  // レシートの日付・時刻行があれば、その次から商品欄とみなす。
+  // OCRが年を誤読していても「20xx年」の形なら開始位置として利用する。
+  let start = 0;
+  const dateIndex = lines.findIndex(line =>
+    /20\d{2}\s*(?:年|[\/\-.])\s*\d{1,2}/.test(line)
+  );
+  if (dateIndex >= 0) start = dateIndex + 1;
+
+  // 「小計」以降は支払・税・クレジット伝票などなので商品照合から除外。
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) {
+    if (/(?:^|\s)小計(?:\s|$)/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+
+  // OCRが小計を落とした場合でも、商品欄から遠くまで探索しすぎない。
+  end = Math.min(end, start + 35);
+
+  return lines.slice(start, end);
 }
 
 async function tryResolveReceiptFromMemory(ocrText) {
