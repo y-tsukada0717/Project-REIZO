@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.9.3</title>
+<title>REIZO v0.9.5</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -127,6 +127,56 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 .member-sub{font-size:12px;color:#777;margin-top:2px}
 .member-role{font-size:12px;font-weight:700;padding:4px 8px;border-radius:999px;background:#eaeaea;white-space:nowrap}
 .owner-tools{margin-top:10px;padding-top:10px;border-top:1px solid #eee}
+
+/* v0.9.5 inventory-first home */
+.house-strip{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:2px 0 14px;padding:0 2px}
+.house-strip h2{margin:0;font-size:18px}
+.house-strip .house-label{font-size:12px;color:#777;margin-bottom:2px}
+.inventory-card{padding:16px 14px}
+.inventory-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:10px}
+.inventory-head h2{margin:2px 0 0;font-size:24px}
+.add-shortcut{width:auto;margin:0;padding:9px 12px;border-radius:10px;font-weight:800}
+.inventory-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:10px 0 12px}
+.summary-chip{border:1px solid #e2e2e2;background:#fff;border-radius:12px;padding:8px 5px;margin:0;text-align:center;font-size:12px;line-height:1.2}
+.summary-chip strong{display:block;font-size:18px;margin-bottom:3px}
+.summary-chip.selected{outline:2px solid #222;font-weight:800}
+.summary-chip.in-stock strong{color:#245c24}
+.summary-chip.low strong{color:#8b6414}
+.summary-chip.out strong{color:#8b2c2c}
+.inventory-list{display:grid;gap:12px}
+.storage-group{border-top:1px solid #ececec;padding-top:10px}
+.storage-group:first-child{border-top:0;padding-top:0}
+.storage-head{display:flex;justify-content:space-between;align-items:center;color:#666;font-size:13px;font-weight:800;margin-bottom:6px}
+.inventory-row{padding:10px 0;border-bottom:1px solid #efefef}
+.inventory-row:last-child{border-bottom:0}
+.inventory-row-main{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.inventory-name{font-weight:800;line-height:1.3;min-width:0;word-break:break-word}
+.inventory-row-side{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.stock-pill{display:inline-block;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:800;white-space:nowrap}
+.stock-pill.in_stock{background:#eef8ee;color:#245c24}
+.stock-pill.low{background:#fff8e6;color:#8b6414}
+.stock-pill.out{background:#fff0f0;color:#8b2c2c}
+.mini-icon{width:auto!important;margin:0!important;padding:5px 7px!important;font-size:13px!important;border:0;background:#f2f2f2;border-radius:8px}
+.status-segment{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:7px}
+.status-segment button{width:100%;margin:0;padding:7px 4px;font-size:12px;border:1px solid #ddd;background:#fafafa;border-radius:9px}
+.status-segment button.active-in{background:#eef8ee;border-color:#9ac99a;font-weight:800}
+.status-segment button.active-low{background:#fff8e6;border-color:#ddc171;font-weight:800}
+.status-segment button.active-out{background:#fff0f0;border-color:#dfa0a0;font-weight:800}
+.empty-inventory{padding:18px 4px;color:#777;text-align:center;font-size:14px}
+.shopping-list{display:grid;gap:7px}
+.shopping-row{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f7f7f7;padding:9px 11px;border-radius:10px}
+.shopping-row strong{font-size:14px}
+.shopping-row span{font-size:12px;color:#666}
+.tool-stack{display:grid;gap:10px}
+.tool-panel{background:#fff;border-radius:14px;padding:0 14px}
+.tool-panel>summary{list-style:none;cursor:pointer;font-weight:800;padding:15px 2px}
+.tool-panel>summary::-webkit-details-marker{display:none}
+.tool-panel>summary::after{content:"＋";float:right;color:#777}
+.tool-panel[open]>summary::after{content:"−"}
+.tool-panel-body{padding:0 0 15px}
+.tool-note{font-size:12px;color:#777;margin:0 0 8px}
+.dashboard-card{margin-top:16px}
+.share-panel{margin-top:16px}
 .muted-card{opacity:.72}
 .muted-card button:disabled{cursor:not-allowed;opacity:.55}
 
@@ -155,7 +205,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
       <button class="icon-button" onclick="closeSideMenu()" aria-label="閉じる">×</button>
     </div>
 
-    <button class="menu-nav" onclick="closeSideMenu()">冷蔵庫</button>
+    <button class="menu-nav" onclick="goHomeInventory()">冷蔵庫</button>
     <button class="menu-nav" onclick="openSettings()">⚙ 設定</button>
 
     <div class="menu-spacer"></div>
@@ -288,153 +338,194 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
 
 <section id="appView" class="hidden">
 
-<div class="card">
-<h2 id="householdName">わが家</h2>
-<p>招待コード</p>
-<div id="inviteCode" class="invite"></div>
-<button onclick="signOut()">ログアウト</button>
+<div class="house-strip">
+  <div>
+    <div class="house-label">いま見ている家</div>
+    <h2 id="householdName">わが家</h2>
+  </div>
+</div>
+
+<div id="inventorySection" class="card inventory-card">
+  <div class="inventory-head">
+    <div>
+      <div class="section-tag">冷蔵庫</div>
+      <h2>在庫</h2>
+    </div>
+    <button class="add-shortcut" onclick="scrollToAddTools()">＋ 追加</button>
+  </div>
+
+  <div id="inventorySummary" class="inventory-summary">
+    <button class="summary-chip selected" data-filter="all" onclick="setInventoryFilter('all')">
+      <strong id="countAll">0</strong>すべて
+    </button>
+    <button class="summary-chip in-stock" data-filter="in_stock" onclick="setInventoryFilter('in_stock')">
+      <strong id="countInStock">0</strong>ある
+    </button>
+    <button class="summary-chip low" data-filter="low" onclick="setInventoryFilter('low')">
+      <strong id="countLow">0</strong>少ない
+    </button>
+    <button class="summary-chip out" data-filter="out" onclick="setInventoryFilter('out')">
+      <strong id="countOut">0</strong>ない
+    </button>
+  </div>
+
+  <div id="items" class="inventory-list"></div>
 </div>
 
 <div class="card">
-<div class="section-tag">家の定番</div>
-<h2>★ 常備品</h2>
-<p class="dashboard-note">買う頻度とは別に「家に置いておきたいもの」を固定できます。</p>
-<div id="stapleList" class="insight-grid"></div>
-
-<hr>
-
-<h2>↻ よく買うもの</h2>
-<p class="dashboard-note">購入履歴から直近30日の購入回数を自動集計します。</p>
-<div id="frequentList" class="insight-grid"></div>
+  <div class="section-tag">買い物</div>
+  <h2>買い物候補</h2>
+  <div id="shopping" class="shopping-list"></div>
 </div>
 
-<div class="card">
-<div class="section-tag">JAN入庫</div>
-<h2>商品を入庫</h2>
-<div class="input-choice">
-<button class="scan-button" onclick="startScanner()">📷 JANをスキャン</button>
-<button class="scan-button" onclick="toggleManualJanPanel()">⌨ JANを入力</button>
-</div>
-<p class="scan-help">ふだんはカメラで。JANが分かっているときは直接入力もできます。</p>
-<div id="manualJanPanel" class="manual-input-panel hidden">
-<input id="manualJanInput" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="JANコード（8・12・13桁）" onkeydown="if(event.key==='Enter'){submitManualJan()}">
-<p class="helper-text">ハイフンや空白は自動で除き、チェックデジットも確認します。</p>
-<button class="primary" onclick="submitManualJan()">JANを確認</button>
-<button onclick="closeManualJanPanel()">閉じる</button>
-</div>
-<div id="scannerArea" class="hidden">
-<div id="reader"></div>
-<button onclick="stopScanner()">スキャンを閉じる</button>
-</div>
+<div id="addTools" class="tool-stack">
+  <details class="tool-panel">
+    <summary>🧾 レシートから追加</summary>
+    <div class="tool-panel-body">
+      <p class="tool-note">撮影したレシートでも、保存済みの画像でも追加できます。</p>
+
+      <div class="input-choice">
+        <button class="primary" onclick="chooseReceiptCamera()">📷 撮る</button>
+        <button onclick="chooseReceiptFile()">🖼 選ぶ</button>
+      </div>
+      <input id="receiptCameraInput" class="hidden" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged('receiptCameraInput')">
+      <input id="receiptFileInput" class="hidden" type="file" accept="image/*" onchange="receiptFileChanged('receiptFileInput')">
+
+      <div id="originalPreviewArea" class="hidden">
+        <div class="process-title">送信するレシート画像</div>
+        <img id="receiptPreview" class="receipt-preview" alt="レシート画像">
+      </div>
+
+      <button id="ocrButton" class="primary" onclick="runReceiptOcr()">レシートを解析</button>
+
+      <div id="receiptScannerArea" class="receipt-link-panel hidden">
+        <div class="process-title">未知商品のJANをスキャン</div>
+        <div id="receiptReader"></div>
+        <button onclick="stopReceiptScanner()">スキャンを閉じる</button>
+      </div>
+
+      <div id="receiptManualJanPanel" class="receipt-link-panel hidden">
+        <div class="process-title">JANを直接入力</div>
+        <div id="receiptManualJanTarget" class="receipt-help"></div>
+        <input id="receiptManualJanInput" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="JANコード（8・12・13桁）" onkeydown="if(event.key==='Enter'){submitReceiptManualJan()}">
+        <p class="helper-text">検索して分かったJANを貼り付けてもOKです。</p>
+        <button class="primary" onclick="submitReceiptManualJan()">このJANで登録</button>
+        <button onclick="cancelReceiptManualJan()">キャンセル</button>
+      </div>
+
+      <div id="receiptLinkForm" class="receipt-link-panel hidden">
+        <div class="process-title">商品をREIZOに登録</div>
+        <div id="receiptLinkTarget" class="receipt-help"></div>
+        <div id="receiptLinkJan" class="jan-number"></div>
+        <input id="receiptLinkProductName" placeholder="商品名">
+        <select id="receiptLinkStorage">
+          <option value="fridge">冷蔵</option>
+          <option value="freezer">冷凍</option>
+          <option value="pantry">常温</option>
+        </select>
+        <button class="primary" onclick="saveReceiptLinkedProduct()">登録して紐づける</button>
+        <button onclick="cancelReceiptLink()">キャンセル</button>
+      </div>
+
+      <div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
+        <div class="ocr-progress-bar">
+          <div id="ocrProgressFill" class="ocr-progress-fill"></div>
+        </div>
+        <div id="ocrStatus" class="ocr-status">準備中…</div>
+      </div>
+
+      <div id="ocrResultArea" class="hidden">
+        <p><strong>認識した購入品</strong></p>
+        <div id="aiReceiptMeta" class="ai-meta hidden"></div>
+        <div id="productCandidates" class="candidate-list"></div>
+        <div id="receiptLearningSummary" class="receipt-summary"></div>
+        <button id="bulkStockButton" class="primary hidden" onclick="stockRecognizedItems()">認識した商品をまとめて入庫</button>
+
+        <div class="raw-toggle">
+          <button onclick="toggleRawOcr()">Google VisionのOCR全文を表示 / 非表示</button>
+        </div>
+        <div id="rawOcrWrap" class="raw-wrap hidden">
+          <p><strong>Google Vision 認識結果（全文）</strong></p>
+          <textarea id="ocrResult" class="ocr-result" readonly></textarea>
+        </div>
+        <button onclick="clearReceiptOcr()">結果をクリア</button>
+      </div>
+    </div>
+  </details>
+
+  <details class="tool-panel">
+    <summary>📦 JANで追加</summary>
+    <div class="tool-panel-body">
+      <p class="tool-note">カメラでスキャンするか、JANコードを直接入力します。</p>
+      <div class="input-choice">
+        <button class="scan-button" onclick="startScanner()">📷 スキャン</button>
+        <button class="scan-button" onclick="toggleManualJanPanel()">⌨ 入力</button>
+      </div>
+
+      <div id="manualJanPanel" class="manual-input-panel hidden">
+        <input id="manualJanInput" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="JANコード（8・12・13桁）" onkeydown="if(event.key==='Enter'){submitManualJan()}">
+        <p class="helper-text">ハイフンや空白は自動で除き、チェックデジットも確認します。</p>
+        <button class="primary" onclick="submitManualJan()">JANを確認</button>
+        <button onclick="closeManualJanPanel()">閉じる</button>
+      </div>
+
+      <div id="scannerArea" class="hidden">
+        <div id="reader"></div>
+        <button onclick="stopScanner()">スキャンを閉じる</button>
+      </div>
+    </div>
+  </details>
+
+  <details class="tool-panel">
+    <summary>✏️ 名前だけで追加</summary>
+    <div class="tool-panel-body">
+      <p class="tool-note">「味噌」「牛乳」のような大まかな名前だけでも登録できます。</p>
+      <input id="itemName" placeholder="例：味噌">
+      <select id="storage">
+        <option value="fridge">冷蔵</option>
+        <option value="freezer">冷凍</option>
+        <option value="pantry">常温</option>
+      </select>
+      <button onclick="addItem()">追加</button>
+    </div>
+  </details>
 </div>
 
 <div id="unknownProductView" class="card hidden">
-<h2>初めての商品</h2>
-<p>このJANはまだ登録されていません。</p>
-<p>JAN</p>
-<div id="scannedJan" class="jan-number"></div>
-<input id="newProductName" placeholder="商品名 例：明治おいしい牛乳 900ml">
-<select id="newProductStorage">
-<option value="fridge">冷蔵</option>
-<option value="freezer">冷凍</option>
-<option value="pantry">常温</option>
-</select>
-<button class="primary" onclick="saveNewProduct()">記憶して入庫</button>
-<button onclick="cancelUnknownProduct()">キャンセル</button>
+  <h2>初めての商品</h2>
+  <p>このJANはまだ登録されていません。</p>
+  <p>JAN</p>
+  <div id="scannedJan" class="jan-number"></div>
+  <input id="newProductName" placeholder="商品名 例：明治おいしい牛乳 900ml">
+  <select id="newProductStorage">
+    <option value="fridge">冷蔵</option>
+    <option value="freezer">冷凍</option>
+    <option value="pantry">常温</option>
+  </select>
+  <button class="primary" onclick="saveNewProduct()">記憶して入庫</button>
+  <button onclick="cancelUnknownProduct()">キャンセル</button>
 </div>
 
-<div class="card">
-<h2>🧾 レシートから追加</h2>
-<p class="receipt-help">その場で撮影しても、すでに撮ったレシート画像を選んでもOKです。</p>
+<div class="card dashboard-card">
+  <div class="section-tag">家の定番</div>
+  <h2>★ 常備品</h2>
+  <div id="stapleList" class="insight-grid"></div>
 
-<div class="input-choice">
-<button class="primary" onclick="chooseReceiptCamera()">📷 レシートを撮る</button>
-<button onclick="chooseReceiptFile()">🖼 写真 / ファイルから選ぶ</button>
-</div>
-<input id="receiptCameraInput" class="hidden" type="file" accept="image/*" capture="environment" onchange="receiptFileChanged('receiptCameraInput')">
-<input id="receiptFileInput" class="hidden" type="file" accept="image/*" onchange="receiptFileChanged('receiptFileInput')">
+  <hr>
 
-<div id="originalPreviewArea" class="hidden">
-<div class="process-title">送信するレシート画像</div>
-<img id="receiptPreview" class="receipt-preview" alt="レシート画像">
+  <h2>↻ よく買うもの</h2>
+  <div id="frequentList" class="insight-grid"></div>
 </div>
 
-<button id="ocrButton" class="primary" onclick="runReceiptOcr()">レシートを解析</button>
+<details class="tool-panel share-panel">
+  <summary>🏠 家の共有情報</summary>
+  <div class="tool-panel-body">
+    <p class="helper-text">招待コード</p>
+    <div id="inviteCode" class="invite"></div>
+  </div>
+</details>
 
-<div id="receiptScannerArea" class="receipt-link-panel hidden">
-<div class="process-title">未知商品のJANをスキャン</div>
-<div id="receiptReader"></div>
-<button onclick="stopReceiptScanner()">スキャンを閉じる</button>
-</div>
-
-<div id="receiptManualJanPanel" class="receipt-link-panel hidden">
-<div class="process-title">JANを直接入力</div>
-<div id="receiptManualJanTarget" class="receipt-help"></div>
-<input id="receiptManualJanInput" type="text" inputmode="numeric" autocomplete="off" maxlength="17" placeholder="JANコード（8・12・13桁）" onkeydown="if(event.key==='Enter'){submitReceiptManualJan()}">
-<p class="helper-text">検索して分かったJANを貼り付けてもOKです。</p>
-<button class="primary" onclick="submitReceiptManualJan()">このJANで登録</button>
-<button onclick="cancelReceiptManualJan()">キャンセル</button>
-</div>
-
-<div id="receiptLinkForm" class="receipt-link-panel hidden">
-<div class="process-title">商品をREIZOに登録</div>
-<div id="receiptLinkTarget" class="receipt-help"></div>
-<div id="receiptLinkJan" class="jan-number"></div>
-<input id="receiptLinkProductName" placeholder="商品名">
-<select id="receiptLinkStorage">
-<option value="fridge">冷蔵</option>
-<option value="freezer">冷凍</option>
-<option value="pantry">常温</option>
-</select>
-<button class="primary" onclick="saveReceiptLinkedProduct()">登録して紐づける</button>
-<button onclick="cancelReceiptLink()">キャンセル</button>
-</div>
-
-<div id="ocrProgressWrap" class="ocr-progress-wrap hidden">
-<div class="ocr-progress-bar">
-<div id="ocrProgressFill" class="ocr-progress-fill"></div>
-</div>
-<div id="ocrStatus" class="ocr-status">準備中…</div>
-</div>
-
-<div id="ocrResultArea" class="hidden">
-<p><strong>認識した購入品</strong></p>
-<div id="aiReceiptMeta" class="ai-meta hidden"></div>
-<div id="productCandidates" class="candidate-list"></div>
-<div id="receiptLearningSummary" class="receipt-summary"></div>
-<button id="bulkStockButton" class="primary hidden" onclick="stockRecognizedItems()">認識した商品をまとめて入庫</button>
-
-<div class="raw-toggle">
-<button onclick="toggleRawOcr()">Google VisionのOCR全文を表示 / 非表示</button>
-</div>
-<div id="rawOcrWrap" class="raw-wrap hidden">
-<p><strong>Google Vision 認識結果（全文）</strong></p>
-<textarea id="ocrResult" class="ocr-result" readonly></textarea>
-</div>
-<button onclick="clearReceiptOcr()">結果をクリア</button>
-</div>
-
-<div class="warning-note">一度覚えた商品は、次からできるだけ自動で処理します。</div>
-</div>
-<div class="card">
-<h2>家にあるものを追加</h2>
-<p class="receipt-help">使い始めは、JANが分からなくても「味噌」「牛乳」のような名前だけでOKです。</p>
-<input id="itemName" placeholder="例：味噌">
-<select id="storage">
-<option value="fridge">冷蔵</option>
-<option value="freezer">冷凍</option>
-<option value="pantry">常温</option>
-</select>
-<button onclick="addItem()">追加</button>
-</div>
-
-<h2>在庫</h2>
-<div id="items"></div>
-
-<h2>買い物候補</h2>
-<div id="shopping"></div>
-
-</section>
+</section></section>
 </main>
 
 <script>
@@ -467,6 +558,7 @@ let currentReceiptFingerprint = null;
 let currentOcrText = "";
 let currentReceiptAnalysisMode = null;
 let currentItems = [];
+let currentInventoryFilter = 'all';
 let currentProducts = [];
 let currentProductMap = new Map();
 let currentConcepts = [];
@@ -523,6 +615,47 @@ function escapeHtml(text) {
   return d.innerHTML;
 }
 
+
+function goHomeInventory() {
+  closeSideMenu();
+  const el = document.getElementById("inventorySection");
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function scrollToAddTools() {
+  const el = document.getElementById("addTools");
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function setInventoryFilter(filter) {
+  currentInventoryFilter = filter || "all";
+  renderItems(currentItems);
+}
+
+function updateInventorySummary(items) {
+  const counts = {
+    all: items.length,
+    in_stock: items.filter(x => x.status === "in_stock").length,
+    low: items.filter(x => x.status === "low").length,
+    out: items.filter(x => x.status === "out").length
+  };
+
+  const ids = {
+    all: "countAll",
+    in_stock: "countInStock",
+    low: "countLow",
+    out: "countOut"
+  };
+
+  for (const [key, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = String(counts[key] || 0);
+  }
+
+  document.querySelectorAll("#inventorySummary .summary-chip").forEach(btn => {
+    btn.classList.toggle("selected", btn.dataset.filter === currentInventoryFilter);
+  });
+}
 
 function openSideMenu() {
   document.getElementById("menuBackdrop").classList.remove("hidden");
@@ -3337,44 +3470,148 @@ async function loadItems() {
 function renderItems(items) {
   const stock = document.getElementById("items");
   const shopping = document.getElementById("shopping");
+  if (!stock || !shopping) return;
+
   stock.innerHTML = "";
   shopping.innerHTML = "";
 
-  const storageNames = { fridge: "冷蔵", freezer: "冷凍", pantry: "常温" };
+  updateInventorySummary(items);
 
-  items.forEach(item => {
-    const div = document.createElement("div");
-    div.className = "item";
-    const concept = item.concept_id ? currentConceptMap.get(item.concept_id) : null;
-    const name = item.display_name || item.name;
+  const storageNames = {
+    fridge: "冷蔵",
+    freezer: "冷凍",
+    pantry: "常温",
+    other: "その他"
+  };
 
-    div.innerHTML = `
-      <div class="item-name">${escapeHtml(name)}</div>
-      <div class="item-meta">${storageNames[item.display_storage || item.storage] || ""}</div>
-      <div class="status-buttons">
-        <button class="${item.status === "in_stock" ? "active" : ""}" onclick="setStatus('${item.id}','in_stock')">ある</button>
-        <button class="${item.status === "low" ? "active" : ""}" onclick="setStatus('${item.id}','low')">少ない</button>
-        <button class="${item.status === "out" ? "active" : ""}" onclick="setStatus('${item.id}','out')">ない</button>
-      </div>
-      ${concept ? `<button class="staple-toggle" onclick="setStaple('${concept.id}', ${concept.is_staple ? 'false' : 'true'})">${concept.is_staple ? '★ 常備品' : '☆ 常備品にする'}</button>` : ''}
-      <button class="danger" onclick="deleteItem('${item.id}')">削除</button>
-    `;
+  const statusNames = {
+    in_stock: "ある",
+    low: "少ない",
+    out: "ない"
+  };
 
-    stock.appendChild(div);
+  const filtered = currentInventoryFilter === "all"
+    ? items
+    : items.filter(item => item.status === currentInventoryFilter);
 
-    if (item.status === "out" || item.status === "low") {
-      const shop = document.createElement("div");
-      shop.className = "item";
-      shop.textContent = item.status === "out"
-        ? "🛒 " + name
-        : "⚠️ " + name + "（少ない）";
-      shopping.appendChild(shop);
+  if (!filtered.length) {
+    stock.innerHTML = `<div class="empty-inventory">${
+      items.length
+        ? "この状態の食品はありません"
+        : "まだ食品がありません。下の「＋ 追加」から登録できます。"
+    }</div>`;
+  } else {
+    const order = ["fridge", "freezer", "pantry", "other"];
+
+    const groups = new Map();
+
+    for (const item of filtered) {
+      const rawStorage = item.display_storage || item.storage || "other";
+      const storage = order.includes(rawStorage) ? rawStorage : "other";
+
+      if (!groups.has(storage)) groups.set(storage, []);
+      groups.get(storage).push(item);
     }
-  });
 
-  if (!items.length) stock.textContent = "まだ食品がありません";
-  if (!items.some(x => x.status === "out" || x.status === "low")) {
-    shopping.textContent = "買い物候補はありません";
+    for (const storage of order) {
+      const groupItems = groups.get(storage);
+      if (!groupItems?.length) continue;
+
+      groupItems.sort((a, b) =>
+        String(a.display_name || a.name || "").localeCompare(
+          String(b.display_name || b.name || ""),
+          "ja"
+        )
+      );
+
+      const group = document.createElement("div");
+      group.className = "storage-group";
+
+      const head = document.createElement("div");
+      head.className = "storage-head";
+      head.innerHTML = `
+        <span>${storageNames[storage]}</span>
+        <span>${groupItems.length}件</span>
+      `;
+      group.appendChild(head);
+
+      for (const item of groupItems) {
+        const concept = item.concept_id
+          ? currentConceptMap.get(item.concept_id)
+          : null;
+
+        const name = item.display_name || item.name;
+        const row = document.createElement("div");
+        row.className = "inventory-row";
+
+        row.innerHTML = `
+          <div class="inventory-row-main">
+            <div class="inventory-name">${escapeHtml(name)}</div>
+            <div class="inventory-row-side">
+              <span class="stock-pill ${item.status}">
+                ${statusNames[item.status] || ""}
+              </span>
+              ${concept ? `
+                <button
+                  class="mini-icon"
+                  title="${concept.is_staple ? "常備品から外す" : "常備品にする"}"
+                  onclick="setStaple('${concept.id}', ${concept.is_staple ? "false" : "true"})"
+                >${concept.is_staple ? "★" : "☆"}</button>
+              ` : ""}
+              <button
+                class="mini-icon"
+                title="削除"
+                onclick="deleteItem('${item.id}')"
+              >×</button>
+            </div>
+          </div>
+
+          <div class="status-segment">
+            <button
+              class="${item.status === "in_stock" ? "active-in" : ""}"
+              onclick="setStatus('${item.id}','in_stock')"
+            >ある</button>
+            <button
+              class="${item.status === "low" ? "active-low" : ""}"
+              onclick="setStatus('${item.id}','low')"
+            >少ない</button>
+            <button
+              class="${item.status === "out" ? "active-out" : ""}"
+              onclick="setStatus('${item.id}','out')"
+            >ない</button>
+          </div>
+        `;
+
+        group.appendChild(row);
+      }
+
+      stock.appendChild(group);
+    }
+  }
+
+  const buyItems = items
+    .filter(x => x.status === "out" || x.status === "low")
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === "out" ? -1 : 1;
+      return String(a.display_name || a.name || "").localeCompare(
+        String(b.display_name || b.name || ""),
+        "ja"
+      );
+    });
+
+  if (!buyItems.length) {
+    shopping.innerHTML = '<div class="insight-empty">買い物候補はありません。</div>';
+  } else {
+    for (const item of buyItems) {
+      const name = item.display_name || item.name;
+      const row = document.createElement("div");
+      row.className = "shopping-row";
+      row.innerHTML = `
+        <strong>${escapeHtml(name)}</strong>
+        <span>${item.status === "out" ? "ない" : "少ない"}</span>
+      `;
+      shopping.appendChild(row);
+    }
   }
 }
 
