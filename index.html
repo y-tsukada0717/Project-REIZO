@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.9.7</title>
+<title>REIZO v0.9.8</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -511,7 +511,7 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
     <div class="section-tag">買い物</div>
     <h2>買うものリスト</h2>
     <p class="helper-text">
-      在庫が「少ない / ない」ものに加えて、今まで買ったことのないものも直接追加できます。
+      常備品が「少ない / ない」になると自動で表示されます。常備しないものや初めて買うものは直接追加できます。
     </p>
 
     <div class="shopping-add-bar">
@@ -818,6 +818,17 @@ function shoppingEntryKey(entry) {
   return "name:" + conceptKey(entry?.name || "");
 }
 
+function shouldAutoSuggestShopping(item) {
+  if (!item) return false;
+  if (item.status !== "low" && item.status !== "out") return false;
+
+  const concept = item.concept_id
+    ? currentConceptMap.get(item.concept_id)
+    : null;
+
+  return Boolean(concept?.is_staple);
+}
+
 function inventoryShoppingKey(item) {
   if (item?.concept_id) return "concept:" + item.concept_id;
   return "name:" + conceptKey(item?.display_name || item?.name || "");
@@ -831,7 +842,7 @@ function combinedShoppingCount(items = currentItems) {
   }
 
   for (const item of items || []) {
-    if (item.status === "low" || item.status === "out") {
+    if (shouldAutoSuggestShopping(item)) {
       keys.add(inventoryShoppingKey(item));
     }
   }
@@ -912,6 +923,60 @@ async function addShoppingItem() {
   shoppingListFeedback(`✓ ${name} を追加しました`, "success");
 }
 
+async function clearPurchasedShoppingItems(purchasedEntries = []) {
+  if (!currentHousehold || !currentShoppingList.length) return 0;
+
+  const conceptIds = new Set();
+  const nameKeys = new Set();
+
+  for (const entry of purchasedEntries || []) {
+    const concept = entry?.concept || null;
+    const product = entry?.product || null;
+    const receiptItem = entry?.receiptItem || null;
+
+    if (concept?.id) conceptIds.add(concept.id);
+
+    const names = [
+      concept?.name,
+      product?.name,
+      receiptItem?.household_name,
+      receiptItem?.normalized_name,
+      receiptItem?.receipt_name
+    ];
+
+    for (const name of names) {
+      const key = conceptKey(name);
+      if (key) nameKeys.add(key);
+    }
+  }
+
+  const matchedIds = currentShoppingList
+    .filter(entry => {
+      if (entry.concept_id && conceptIds.has(entry.concept_id)) return true;
+      const key = entry.name_key || conceptKey(entry.name);
+      return key && nameKeys.has(key);
+    })
+    .map(entry => entry.id);
+
+  if (!matchedIds.length) return 0;
+
+  const { error } = await db
+    .from("shopping_list_items")
+    .delete()
+    .eq("household_id", currentHousehold.id)
+    .in("id", matchedIds);
+
+  if (error) throw error;
+
+  currentShoppingList = currentShoppingList.filter(
+    entry => !matchedIds.includes(entry.id)
+  );
+
+  renderShoppingList();
+  updateHomeTabCounts(currentItems);
+  return matchedIds.length;
+}
+
 async function removeShoppingItem(id) {
   const entry = currentShoppingList.find(x => x.id === id);
   if (!entry) return;
@@ -959,9 +1024,9 @@ function renderShoppingList() {
     });
   }
 
-  // 在庫が「少ない / ない」のものは従来どおり自動表示
+  // 自動表示するのは「常備品」かつ「少ない / ない」のものだけ。
   for (const item of currentItems) {
-    if (item.status !== "low" && item.status !== "out") continue;
+    if (!shouldAutoSuggestShopping(item)) continue;
 
     const key = inventoryShoppingKey(item);
     if (usedKeys.has(key)) continue;
@@ -978,7 +1043,7 @@ function renderShoppingList() {
 
   if (!rows.length) {
     shopping.innerHTML =
-      '<div class="insight-empty">買うものはありません。上の欄から直接追加できます。</div>';
+      '<div class="insight-empty">買うものはありません。常備品の補充候補か、上から直接追加したものがここに表示されます。</div>';
     return;
   }
 
@@ -1000,7 +1065,7 @@ function renderShoppingList() {
           ${
             rowData.kind === "explicit"
               ? '<span class="shopping-source-pill">リストに追加</span>'
-              : '<span class="shopping-source-pill">在庫から自動</span>'
+              : '<span class="shopping-source-pill">常備品を補充</span>'
           }
           ${statusLabel ? ` ${escapeHtml(statusLabel)}` : ""}
         </div>
@@ -2025,7 +2090,22 @@ async function putProductInStock(product, householdName = null) {
   try {
     const linked = await ensureProductInStock(product, householdName);
     await recordPurchase([linked.product], "jan");
-    message("✓ " + linked.concept.name + " を入庫しました", "success");
+
+    const cleared = await clearPurchasedShoppingItems([
+      {
+        concept: linked.concept,
+        product: linked.product,
+        receiptItem: householdName
+          ? { household_name: householdName }
+          : null
+      }
+    ]);
+
+    message(
+      "✓ " + linked.concept.name + " を入庫しました" +
+      (cleared ? "。買うものリストからも外しました" : ""),
+      "success"
+    );
   } catch (err) {
     return message(err.message || String(err), "error");
   }
@@ -3450,24 +3530,42 @@ async function stockRecognizedItems() {
   button.textContent = "入庫中…";
 
   try {
+    const purchasedEntries = [];
+
     for (const product of uniqueProducts) {
       const entry = known.find(x => x.product?.id === product.id);
-      await ensureProductInStock(product, entry?.item?.household_name || null);
+      const linked = await ensureProductInStock(
+        product,
+        entry?.item?.household_name || null
+      );
+
+      purchasedEntries.push({
+        concept: linked.concept,
+        product: linked.product,
+        receiptItem: entry?.item || null
+      });
     }
 
     const purchaseResult = await recordReceiptPurchase(uniqueProducts);
+    const clearedShoppingCount =
+      await clearPurchasedShoppingItems(purchasedEntries);
 
     await loadItems();
     await loadHouseholdInsights();
 
     if (purchaseResult.duplicate) {
       message(
-        "✓ " + uniqueProducts.length + "商品を入庫しました。同じ買い物として扱ったため、購入回数は二重に増やしていません。",
+        "✓ " + uniqueProducts.length + "商品を入庫しました。同じ買い物として扱ったため、購入回数は二重に増やしていません。" +
+        (clearedShoppingCount ? " 買うものリストから" + clearedShoppingCount + "件外しました。" : ""),
         "success"
       );
       button.textContent = "✓ 入庫済み（重複履歴なし）";
     } else {
-      message("✓ " + uniqueProducts.length + "商品をまとめて入庫し、購入履歴も記録しました", "success");
+      message(
+        "✓ " + uniqueProducts.length + "商品をまとめて入庫し、購入履歴も記録しました" +
+        (clearedShoppingCount ? "。買うものリストから" + clearedShoppingCount + "件外しました" : ""),
+        "success"
+      );
       button.textContent = "✓ 入庫・履歴記録済み";
     }
   } catch (err) {
@@ -3852,6 +3950,8 @@ async function setStaple(conceptId, value) {
 
   await loadHouseholdInsights();
   await loadItems();
+  renderShoppingList();
+  updateHomeTabCounts(currentItems);
   message(value ? "★ 常備品に追加しました" : "常備品から外しました", "success");
 }
 
