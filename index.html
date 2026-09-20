@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.9.8</title>
+<title>REIZO v0.9.9</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -868,6 +868,129 @@ async function loadShoppingList() {
   updateHomeTabCounts(currentItems);
 }
 
+async function findConceptByShoppingAlias(nameKey) {
+  if (!currentHousehold || !nameKey) return null;
+
+  const { data, error } = await db
+    .from("food_concept_aliases")
+    .select("concept_id")
+    .eq("household_id", currentHousehold.id)
+    .eq("alias_key", nameKey)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.concept_id) return null;
+
+  let concept = currentConceptMap.get(data.concept_id) || null;
+
+  if (!concept) {
+    const result = await db
+      .from("food_concepts")
+      .select("*")
+      .eq("household_id", currentHousehold.id)
+      .eq("id", data.concept_id)
+      .maybeSingle();
+
+    if (result.error) throw result.error;
+    concept = result.data || null;
+
+    if (concept) {
+      currentConceptMap.set(concept.id, concept);
+      if (!currentConcepts.some(x => x.id === concept.id)) {
+        currentConcepts.push(concept);
+      }
+    }
+  }
+
+  return concept;
+}
+
+async function rememberConceptAlias(aliasName, concept, source = "ai") {
+  if (!currentHousehold || !concept?.id) return;
+
+  const cleanAlias = String(aliasName || "").trim();
+  const aliasKey = conceptKey(cleanAlias);
+
+  if (!cleanAlias || !aliasKey) return;
+  if (aliasKey === concept.name_key) return;
+
+  const { error } = await db
+    .from("food_concept_aliases")
+    .upsert({
+      household_id: currentHousehold.id,
+      concept_id: concept.id,
+      alias: cleanAlias,
+      alias_key: aliasKey,
+      source
+    }, {
+      onConflict: "household_id,alias_key"
+    });
+
+  if (error) throw error;
+}
+
+async function resolveShoppingConcept(name) {
+  const cleanName = String(name || "").trim();
+  const nameKey = conceptKey(cleanName);
+
+  if (!cleanName || !nameKey) {
+    return {
+      concept: null,
+      resolvedBy: "none"
+    };
+  }
+
+  // 1. 完全一致。APIは使わない。
+  const exact =
+    currentConcepts.find(x => x.name_key === nameKey) || null;
+
+  if (exact) {
+    return {
+      concept: exact,
+      resolvedBy: "exact"
+    };
+  }
+
+  // 2. REIZOが過去に覚えた表記ゆれ。
+  const aliasConcept =
+    await findConceptByShoppingAlias(nameKey);
+
+  if (aliasConcept) {
+    return {
+      concept: aliasConcept,
+      resolvedBy: "alias"
+    };
+  }
+
+  // 3. 既知概念のどれかと同義かをAIに聞く。
+  //    既知一覧を渡しているので、同じ意味なら既存表記を優先させる。
+  const classifiedName =
+    await classifyHouseholdName(cleanName);
+
+  const classifiedKey =
+    conceptKey(classifiedName);
+
+  const aiMatched =
+    currentConcepts.find(x => x.name_key === classifiedKey) || null;
+
+  if (aiMatched) {
+    // 次回からAIを呼ばずに済むよう学習する。
+    await rememberConceptAlias(cleanName, aiMatched, "ai");
+
+    return {
+      concept: aiMatched,
+      resolvedBy: "ai"
+    };
+  }
+
+  // 本当に未知なら買い物予定だけ作る。
+  // 「買いたい」だけで在庫概念を勝手に増やさない。
+  return {
+    concept: null,
+    resolvedBy: "new"
+  };
+}
+
 async function addShoppingItem() {
   shoppingListFeedback("");
 
@@ -885,15 +1008,42 @@ async function addShoppingItem() {
     return shoppingListFeedback("名前を認識できませんでした", "error");
   }
 
-  const already = currentShoppingList.find(x => x.name_key === nameKey);
-  if (already) {
+  // 同じ入力表記が既に買い物予定にある場合
+  const directDuplicate =
+    currentShoppingList.find(x => x.name_key === nameKey);
+
+  if (directDuplicate) {
     return shoppingListFeedback("すでに買うものリストに入っています", "error");
   }
 
-  // 既知の食品なら concept_id をつなぐ。
-  // 初めての食品なら、買い物予定だけ先に作り、在庫や食材概念は無理に作らない。
-  const knownConcept =
-    currentConcepts.find(x => x.name_key === nameKey) || null;
+  let resolved;
+
+  try {
+    resolved = await resolveShoppingConcept(name);
+  } catch (err) {
+    // 解決に失敗しても「買いたい」というユーザー入力は失わない。
+    console.error("shopping concept resolve error:", err);
+    resolved = {
+      concept: null,
+      resolvedBy: "new"
+    };
+  }
+
+  const knownConcept = resolved?.concept || null;
+
+  // 表記違いでも同じconceptが既にリストにあれば重複させない。
+  if (knownConcept?.id) {
+    const sameConcept = currentShoppingList.find(
+      x => x.concept_id === knownConcept.id
+    );
+
+    if (sameConcept) {
+      return shoppingListFeedback(
+        `${knownConcept.name} はすでに買うものリストに入っています`,
+        "error"
+      );
+    }
+  }
 
   const { data, error } = await db
     .from("shopping_list_items")
@@ -916,10 +1066,12 @@ async function addShoppingItem() {
   }
 
   currentShoppingList.push(data);
+
   if (input) input.value = "";
 
   renderShoppingList();
   updateHomeTabCounts(currentItems);
+
   shoppingListFeedback(`✓ ${name} を追加しました`, "success");
 }
 
