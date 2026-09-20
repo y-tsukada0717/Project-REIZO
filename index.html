@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>REIZO v0.9.6</title>
+<title>REIZO v0.9.7</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -230,6 +230,70 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
   color:#777;
   font-size:13px;
 }
+
+/* v0.9.7 independent shopping intentions */
+.shopping-add-bar{
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:8px;
+  margin:12px 0 6px;
+}
+.shopping-add-bar input{
+  margin:0;
+  min-width:0;
+}
+.shopping-add-bar button{
+  width:auto;
+  margin:0;
+  padding-left:16px;
+  padding-right:16px;
+  white-space:nowrap;
+}
+.shopping-feedback{
+  min-height:18px;
+  margin:4px 2px 10px;
+  font-size:12px;
+  font-weight:700;
+}
+.shopping-feedback.success{color:#245c24}
+.shopping-feedback.error{color:#8b2c2c}
+.shopping-row{
+  align-items:center;
+}
+.shopping-row-main{
+  min-width:0;
+}
+.shopping-meta{
+  margin-top:2px;
+  font-size:11px;
+  color:#777;
+}
+.shopping-row-actions{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-shrink:0;
+}
+.shopping-done{
+  width:auto!important;
+  margin:0!important;
+  padding:6px 9px!important;
+  border-radius:9px;
+  font-size:12px!important;
+  font-weight:800;
+  background:#fff;
+  border:1px solid #d7d7d7;
+}
+.shopping-source-pill{
+  display:inline-block;
+  padding:3px 7px;
+  border-radius:999px;
+  background:#f0f0f0;
+  color:#666;
+  font-size:10px;
+  font-weight:800;
+  white-space:nowrap;
+}
 .muted-card{opacity:.72}
 .muted-card button:disabled{cursor:not-allowed;opacity:.55}
 
@@ -446,7 +510,22 @@ hr{margin:22px 0;border:0;border-top:1px solid #ddd}
   <div class="card">
     <div class="section-tag">買い物</div>
     <h2>買うものリスト</h2>
-    <p class="helper-text">「少ない」「ない」にしたものが自動でここに集まります。</p>
+    <p class="helper-text">
+      在庫が「少ない / ない」ものに加えて、今まで買ったことのないものも直接追加できます。
+    </p>
+
+    <div class="shopping-add-bar">
+      <input
+        id="shoppingAddInput"
+        type="text"
+        autocomplete="off"
+        placeholder="例：たこ"
+        onkeydown="if(event.key==='Enter'){addShoppingItem()}"
+      >
+      <button class="primary" onclick="addShoppingItem()">追加</button>
+    </div>
+    <div id="shoppingListMessage" class="shopping-feedback" aria-live="polite"></div>
+
     <div id="shopping" class="shopping-list"></div>
   </div>
 </div>
@@ -639,6 +718,7 @@ let currentReceiptAnalysisMode = null;
 let currentItems = [];
 let currentInventoryFilter = 'all';
 let currentHomeTab = 'inventory';
+let currentShoppingList = [];
 let currentProducts = [];
 let currentProductMap = new Map();
 let currentConcepts = [];
@@ -724,11 +804,228 @@ function switchHomeTab(tab) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function shoppingListFeedback(text = "", type = "") {
+  const el = document.getElementById("shoppingListMessage");
+  if (!el) return;
+
+  el.textContent = text || "";
+  el.className = "shopping-feedback";
+  if (type) el.classList.add(type);
+}
+
+function shoppingEntryKey(entry) {
+  if (entry?.concept_id) return "concept:" + entry.concept_id;
+  return "name:" + conceptKey(entry?.name || "");
+}
+
+function inventoryShoppingKey(item) {
+  if (item?.concept_id) return "concept:" + item.concept_id;
+  return "name:" + conceptKey(item?.display_name || item?.name || "");
+}
+
+function combinedShoppingCount(items = currentItems) {
+  const keys = new Set();
+
+  for (const entry of currentShoppingList) {
+    keys.add(shoppingEntryKey(entry));
+  }
+
+  for (const item of items || []) {
+    if (item.status === "low" || item.status === "out") {
+      keys.add(inventoryShoppingKey(item));
+    }
+  }
+
+  return keys.size;
+}
+
+async function loadShoppingList() {
+  if (!currentHousehold) return;
+
+  const { data, error } = await db
+    .from("shopping_list_items")
+    .select("*")
+    .eq("household_id", currentHousehold.id)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    return shoppingListFeedback(error.message, "error");
+  }
+
+  currentShoppingList = data || [];
+  renderShoppingList();
+  updateHomeTabCounts(currentItems);
+}
+
+async function addShoppingItem() {
+  shoppingListFeedback("");
+
+  if (!currentHousehold) return;
+
+  const input = document.getElementById("shoppingAddInput");
+  const name = String(input?.value || "").trim();
+
+  if (!name) {
+    return shoppingListFeedback("買うものを入力してください", "error");
+  }
+
+  const nameKey = conceptKey(name);
+  if (!nameKey) {
+    return shoppingListFeedback("名前を認識できませんでした", "error");
+  }
+
+  const already = currentShoppingList.find(x => x.name_key === nameKey);
+  if (already) {
+    return shoppingListFeedback("すでに買うものリストに入っています", "error");
+  }
+
+  // 既知の食品なら concept_id をつなぐ。
+  // 初めての食品なら、買い物予定だけ先に作り、在庫や食材概念は無理に作らない。
+  const knownConcept =
+    currentConcepts.find(x => x.name_key === nameKey) || null;
+
+  const { data, error } = await db
+    .from("shopping_list_items")
+    .insert({
+      household_id: currentHousehold.id,
+      concept_id: knownConcept?.id || null,
+      name,
+      name_key: nameKey,
+      source: "manual",
+      added_by: currentUser?.id || null
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (error.code === "23505") {
+      return shoppingListFeedback("すでに買うものリストに入っています", "error");
+    }
+    return shoppingListFeedback(error.message, "error");
+  }
+
+  currentShoppingList.push(data);
+  if (input) input.value = "";
+
+  renderShoppingList();
+  updateHomeTabCounts(currentItems);
+  shoppingListFeedback(`✓ ${name} を追加しました`, "success");
+}
+
+async function removeShoppingItem(id) {
+  const entry = currentShoppingList.find(x => x.id === id);
+  if (!entry) return;
+
+  const { error } = await db
+    .from("shopping_list_items")
+    .delete()
+    .eq("id", id)
+    .eq("household_id", currentHousehold.id);
+
+  if (error) {
+    return shoppingListFeedback(error.message, "error");
+  }
+
+  currentShoppingList = currentShoppingList.filter(x => x.id !== id);
+  renderShoppingList();
+  updateHomeTabCounts(currentItems);
+  shoppingListFeedback(`✓ ${entry.name} をリストから外しました`, "success");
+}
+
+function renderShoppingList() {
+  const shopping = document.getElementById("shopping");
+  if (!shopping) return;
+
+  shopping.innerHTML = "";
+
+  const rows = [];
+  const usedKeys = new Set();
+
+  // 明示的に追加された買い物予定を優先
+  for (const entry of currentShoppingList) {
+    const key = shoppingEntryKey(entry);
+    usedKeys.add(key);
+
+    const matchingInventory = currentItems.find(
+      item => inventoryShoppingKey(item) === key
+    );
+
+    rows.push({
+      kind: "explicit",
+      key,
+      name: entry.name,
+      listId: entry.id,
+      status: matchingInventory?.status || null
+    });
+  }
+
+  // 在庫が「少ない / ない」のものは従来どおり自動表示
+  for (const item of currentItems) {
+    if (item.status !== "low" && item.status !== "out") continue;
+
+    const key = inventoryShoppingKey(item);
+    if (usedKeys.has(key)) continue;
+    usedKeys.add(key);
+
+    rows.push({
+      kind: "stock",
+      key,
+      name: item.display_name || item.name,
+      listId: null,
+      status: item.status
+    });
+  }
+
+  if (!rows.length) {
+    shopping.innerHTML =
+      '<div class="insight-empty">買うものはありません。上の欄から直接追加できます。</div>';
+    return;
+  }
+
+  for (const rowData of rows) {
+    const row = document.createElement("div");
+    row.className = "shopping-row";
+
+    const statusLabel =
+      rowData.status === "out"
+        ? "在庫：ない"
+        : rowData.status === "low"
+          ? "在庫：少ない"
+          : "";
+
+    row.innerHTML = `
+      <div class="shopping-row-main">
+        <strong>${escapeHtml(rowData.name)}</strong>
+        <div class="shopping-meta">
+          ${
+            rowData.kind === "explicit"
+              ? '<span class="shopping-source-pill">リストに追加</span>'
+              : '<span class="shopping-source-pill">在庫から自動</span>'
+          }
+          ${statusLabel ? ` ${escapeHtml(statusLabel)}` : ""}
+        </div>
+      </div>
+
+      <div class="shopping-row-actions">
+        ${
+          rowData.kind === "explicit"
+            ? `<button
+                 class="shopping-done"
+                 onclick="removeShoppingItem('${rowData.listId}')"
+                 title="買うものリストから外す"
+               >✓</button>`
+            : ""
+        }
+      </div>
+    `;
+
+    shopping.appendChild(row);
+  }
+}
+
 function updateHomeTabCounts(items) {
-  const inventoryCount = items.length;
-  const shoppingCount = items.filter(
-    x => x.status === "low" || x.status === "out"
-  ).length;
+  const inventoryCount = (items || []).length;
+  const shoppingCount = combinedShoppingCount(items || []);
 
   const inventoryEl = document.getElementById("tabInventoryCount");
   const shoppingEl = document.getElementById("tabShoppingCount");
@@ -1355,6 +1652,7 @@ async function openHousehold(id) {
   }
 
   await loadHouseholdInsights();
+  await loadShoppingList();
   await loadItems();
   startRealtime();
 }
@@ -3588,11 +3886,9 @@ async function loadItems() {
 
 function renderItems(items) {
   const stock = document.getElementById("items");
-  const shopping = document.getElementById("shopping");
-  if (!stock || !shopping) return;
+  if (!stock) return;
 
   stock.innerHTML = "";
-  shopping.innerHTML = "";
 
   updateInventorySummary(items);
   updateHomeTabCounts(items);
@@ -3709,30 +4005,8 @@ function renderItems(items) {
     }
   }
 
-  const buyItems = items
-    .filter(x => x.status === "out" || x.status === "low")
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === "out" ? -1 : 1;
-      return String(a.display_name || a.name || "").localeCompare(
-        String(b.display_name || b.name || ""),
-        "ja"
-      );
-    });
-
-  if (!buyItems.length) {
-    shopping.innerHTML = '<div class="insight-empty">買い物候補はありません。</div>';
-  } else {
-    for (const item of buyItems) {
-      const name = item.display_name || item.name;
-      const row = document.createElement("div");
-      row.className = "shopping-row";
-      row.innerHTML = `
-        <strong>${escapeHtml(name)}</strong>
-        <span>${item.status === "out" ? "ない" : "少ない"}</span>
-      `;
-      shopping.appendChild(row);
-    }
-  }
+  renderShoppingList();
+  updateHomeTabCounts(items);
 }
 
 async function setStatus(id, status) {
@@ -3760,6 +4034,14 @@ function startRealtime() {
       filter: "household_id=eq." + currentHousehold.id
     }, async () => {
       await loadItems();
+    })
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "shopping_list_items",
+      filter: "household_id=eq." + currentHousehold.id
+    }, async () => {
+      await loadShoppingList();
     })
     .on("postgres_changes", {
       event: "*",
